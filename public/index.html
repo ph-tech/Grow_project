@@ -13,9 +13,18 @@
         <div>
           <h1>Signal Watch</h1>
         </div>
-        <div class="status" id="market-status">Connecting to market data</div>
+        <nav class="nav" aria-label="Primary">
+          <button class="nav-link active" data-view="dashboard">Watchlist</button>
+          <button class="nav-link" data-view="history">Signal history</button>
+          <button class="nav-link" data-view="settings">Settings</button>
+        </nav>
+        <div class="header-actions">
+          <div class="status" id="market-status">Connecting to market data</div>
+          <button class="account-button" id="account-button">Save across devices</button>
+        </div>
       </header>
 
+      <div class="view active" id="dashboard-view">
       <section class="intro">
         <div>
           <p class="label">YOUR MARKET, FILTERED</p>
@@ -60,6 +69,44 @@
           </table>
         </div>
       </section>
+      </div>
+
+      <section class="view secondary-view" id="history-view">
+        <p class="label">PAST SIGNALS</p>
+        <h2>Signal history</h2>
+        <p class="subcopy">Review unusual daily moves from your saved stocks, not a generic news feed.</p>
+        <div class="history-list" id="history-list"></div>
+      </section>
+
+      <section class="view secondary-view" id="settings-view">
+        <p class="label">YOUR SIGNAL DESK</p>
+        <h2>Settings</h2>
+        <div class="settings-grid">
+          <article class="settings-card">
+            <p class="label">ALERT FILTER</p>
+            <h3>Daily signal threshold</h3>
+            <p>Control which signals are saved for your attention. This is an in-app digest setting; it does not send push notifications.</p>
+            <label class="select-label" for="alert-level">Show in digest</label>
+            <select id="alert-level">
+              <option value="high">High-confidence only</option>
+              <option value="all">All meaningful signals</option>
+              <option value="off">Pause signal digest</option>
+            </select>
+            <button class="quiet-button" id="save-settings">Save setting</button>
+          </article>
+          <article class="settings-card">
+            <p class="label">NSE SESSION</p>
+            <h3 id="market-session-title">Checking market hours</h3>
+            <p id="market-session-copy">Market data is assessed against Indian trading hours so the last close is not mistaken for stale data.</p>
+          </article>
+          <article class="settings-card">
+            <p class="label">ACCOUNT</p>
+            <h3 id="account-title">Device-only watchlist</h3>
+            <p id="account-copy">Create an account to intentionally access the same watchlist from another device.</p>
+            <button class="quiet-button" id="account-settings-button">Create account</button>
+          </article>
+        </div>
+      </section>
     </main>
     <template id="empty-state">
       <div class="empty">
@@ -69,6 +116,23 @@
       </div>
     </template>
     <div class="toast" id="toast" role="status"></div>
+    <dialog id="account-dialog">
+      <button class="dialog-close" aria-label="Close account dialog">×</button>
+      <p class="label">SYNC YOUR WATCHLIST</p>
+      <h2 id="auth-heading">Create your account</h2>
+      <p id="auth-copy">Your current device watchlist will be kept and linked to your account.</p>
+      <form id="auth-form">
+        <label>Email <input id="auth-email" type="email" autocomplete="email" required /></label>
+        <label>Password <input id="auth-password" type="password" autocomplete="new-password" minlength="10" required /></label>
+        <button class="quiet-button" type="submit" id="auth-submit">Create account</button>
+      </form>
+      <button class="text-button" id="auth-switch">Already have an account? Sign in</button>
+      <button class="text-button danger" id="logout-button" hidden>Sign out</button>
+    </dialog>
+    <dialog id="detail-dialog">
+      <button class="dialog-close" aria-label="Close stock detail">×</button>
+      <div id="stock-detail"></div>
+    </dialog>
     <script type="module" src="/app.js"></script>
   </body>
 </html>

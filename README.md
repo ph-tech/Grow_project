@@ -51,6 +51,10 @@ For Railway, mount a persistent volume at `/data` and set `DATA_DIR=/data`.
 
 ## Engineering decisions
 
+### Beyond the basic watchlist
+
+Signal Watch includes four focused product surfaces beyond the dashboard. **Peer divergence** compares a stock with two or more watched sector peers and flags an unusual outperformer or underperformer; the first groups cover IT services, private banks, auto, and energy. **Stock detail** exposes the 30-session range, usual swing, volume baseline, and recorded signals. **Signal history** is a dated record of meaningful daily moves. **Settings** offers a persisted high-confidence/all/off signal-digest filter and explains the current NSE session status. A password-protected account can merge the device watchlist into a server account and restore it on another device.
+
 ### Meaningful change
 
 For each stock, Signal Watch calculates the **sample** standard deviation of its recent daily percentage returns (up to 20 observations, with a 0.25% floor applied before the comparison). A current move is meaningful when it is at least **1.25x that stock's normal daily swing**, or at least **0.9x normal with 2x average volume**. The ranked signal score multiplies that relative move by a capped volume-confidence boost (at most 1.7x the range score). This keeps routine volatility out of the feed while promoting moves with real participation. Each card exposes the raw daily move, its normal-range multiple, volume multiple, score, and a plain-language reason.
@@ -77,7 +81,7 @@ The immediate bottleneck is upstream market-data rate limits, not scoring: calcu
 
 ### Time-pressure trade-off
 
-I chose an HTTP-only device identity over full account authentication and a file-backed server store over provisioning Postgres. That preserves the essential cross-visit backend persistence and makes the app runnable in one command, but it does not yet let a user deliberately merge their watchlist across separate devices. The atomic write queue and in-flight market-request deduplication operate inside one Node process; a multi-instance deployment still needs Postgres and Redis before it can coordinate writes and cache refreshes across instances.
+I chose a self-contained email/password account over a third-party OAuth integration and a file-backed server store over provisioning Postgres. It makes cross-device watchlist restoration possible without requiring external credentials, but it does not provide password reset, email verification, or multi-instance coordination. The atomic write queue and in-flight market-request deduplication operate inside one Node process; a multi-instance deployment still needs Postgres and Redis before it can coordinate writes and cache refreshes across instances.
 
 ## Why I made these choices
 

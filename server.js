@@ -1,11 +1,13 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, scrypt, timingSafeEqual } from "node:crypto";
 import { readFile, writeFile, mkdir, readdir, rename, unlink } from "node:fs/promises";
 import { createServer } from "node:http";
 import { extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import YahooFinance from "yahoo-finance2";
 import { calculateSignal, explainSignal } from "./lib/scoring.js";
-import { freshnessStatus } from "./lib/market-hours.js";
+import { freshnessStatus, isIndianMarketOpen } from "./lib/market-hours.js";
+import { applyPeerDivergence } from "./lib/peers.js";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = join(root, "public");
@@ -18,8 +20,10 @@ const STOOQ_TIMEOUT_MS = Number(process.env.STOOQ_TIMEOUT_MS || 5_000);
 const YAHOO_CHART_URL = process.env.YAHOO_CHART_URL || "https://query1.finance.yahoo.com/v8/finance/chart";
 const STOOQ_QUOTE_URL = process.env.STOOQ_QUOTE_URL || "https://stooq.com/q/l/";
 const MAX_WATCHLIST_SIZE = 40;
+const PASSWORD_MIN_LENGTH = 10;
+const scryptAsync = promisify(scrypt);
 let writeChain = Promise.resolve();
-let database = { users: {}, watchlists: {}, snapshots: {}, cache: {} };
+let database = { users: {}, accounts: {}, watchlists: {}, snapshots: {}, cache: {} };
 const inFlightMarketRequests = new Map();
 const userLocks = new Map();
 const searchCache = new Map();
@@ -38,7 +42,7 @@ class HttpError extends Error {
 }
 
 function emptyDatabase() {
-  return { users: {}, watchlists: {}, snapshots: {}, cache: {} };
+  return { users: {}, accounts: {}, watchlists: {}, snapshots: {}, cache: {} };
 }
 
 function objectRecord(value) {
@@ -55,6 +59,7 @@ function normalizeDatabase(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return emptyDatabase();
   return {
     users: objectRecord(value.users),
+    accounts: objectRecord(value.accounts),
     watchlists: arrayRecord(value.watchlists),
     snapshots: arrayRecord(value.snapshots),
     cache: objectRecord(value.cache),
@@ -129,14 +134,66 @@ function cookies(request) {
 }
 
 async function currentUser(request, response) {
-  let id = cookies(request).signal_user;
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id || "") || !database.users[id]) {
+  const cookie = cookies(request);
+  let id = cookie.signal_account || cookie.signal_user;
+  const validId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id || "");
+  if (!validId || !database.users[id]) {
     id = randomUUID();
-    database.users[id] = { id, createdAt: new Date().toISOString(), lastSeenAt: null };
+    database.users[id] = {
+      id,
+      createdAt: timestamp(),
+      lastSeenAt: null,
+      preferences: { alertLevel: "high" },
+      isAccount: false,
+    };
     await persist();
-    response.setHeader("set-cookie", `signal_user=${id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000`);
+    response.setHeader("set-cookie", sessionCookie("signal_user", id, request));
   }
   return database.users[id];
+}
+
+function sessionCookie(name, value, request, maxAge = 31536000) {
+  const secure = request.headers["x-forwarded-proto"] === "https" ? "; Secure" : "";
+  return `${name}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
+}
+
+function normalizeEmail(value) {
+  const email = String(value || "").trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+    throw new HttpError(400, "Enter a valid email address.");
+  }
+  return email;
+}
+
+function validatePassword(value) {
+  const password = String(value || "");
+  if (password.length < PASSWORD_MIN_LENGTH || password.length > 200) {
+    throw new HttpError(400, `Password must be ${PASSWORD_MIN_LENGTH}-200 characters.`);
+  }
+  return password;
+}
+
+async function passwordRecord(password) {
+  const salt = randomBytes(16).toString("hex");
+  const hash = (await scryptAsync(password, salt, 64)).toString("hex");
+  return { salt, hash };
+}
+
+async function passwordMatches(password, account) {
+  const candidate = Buffer.from(await scryptAsync(password, account.passwordSalt, 64));
+  const stored = Buffer.from(account.passwordHash, "hex");
+  return candidate.length === stored.length && timingSafeEqual(candidate, stored);
+}
+
+function mergeUserData(fromId, toId) {
+  const existing = database.watchlists[toId] || [];
+  const additions = (database.watchlists[fromId] || []).filter((item) => !existing.some((saved) => saved.ticker === item.ticker));
+  database.watchlists[toId] = [...existing, ...additions].slice(0, MAX_WATCHLIST_SIZE);
+  const previousVisit = database.users[fromId]?.lastSeenAt;
+  if (previousVisit && (!database.users[toId].lastSeenAt || previousVisit > database.users[toId].lastSeenAt)) {
+    database.users[toId].lastSeenAt = previousVisit;
+  }
+  delete database.watchlists[fromId];
 }
 
 function normalizeTicker(value) {
@@ -363,6 +420,38 @@ function saveSnapshot(data) {
   }].slice(-100);
 }
 
+function preferencesFor(user) {
+  user.preferences = { alertLevel: "high", ...(user.preferences || {}) };
+  return user.preferences;
+}
+
+function historicSignals(entry) {
+  const history = entry.history || [];
+  return history.slice(1).map((day, index) => {
+    const signal = calculateSignal({
+      price: day.close,
+      previousClose: history[index].close,
+      volume: day.volume,
+      history: history.slice(Math.max(0, index - 29), index + 1),
+    });
+    return {
+      at: day.at,
+      price: day.close,
+      ...signal,
+      explanation: explainSignal(signal),
+    };
+  }).filter((signal) => signal.meaningful).slice(-15).reverse();
+}
+
+function marketStatus() {
+  return {
+    market: "NSE",
+    open: isIndianMarketOpen(),
+    label: isIndianMarketOpen() ? "NSE is open" : "NSE is closed",
+    hours: "Mon-Fri, 9:15 AM-3:30 PM IST",
+  };
+}
+
 function withUserLock(userId, mutation) {
   const previous = userLocks.get(userId) || Promise.resolve();
   const next = previous.then(mutation, mutation);
@@ -401,13 +490,87 @@ async function watchlistPayload(user, markSeen = false) {
       }
     }),
   );
-  entries.sort((a, b) => (b.signal?.score || -1) - (a.signal?.score || -1));
+  const enriched = applyPeerDivergence(entries).map((entry) => ({
+    ...entry,
+    priority: (entry.signal?.score || -1) + (entry.peer?.meaningful ? entry.peer.score * 0.45 : 0),
+  }));
+  enriched.sort((a, b) => b.priority - a.priority);
   if (markSeen) user.lastSeenAt = timestamp();
   await persist();
-  return { entries, lastSeenAt: previousVisit };
+  return {
+    entries: enriched,
+    lastSeenAt: previousVisit,
+    market: marketStatus(),
+    preferences: preferencesFor(user),
+  };
 }
 
 async function api(request, response, user, path) {
+  if (request.method === "GET" && path === "/api/session") {
+    return send(response, 200, {
+      authenticated: Boolean(user.isAccount),
+      email: user.email || null,
+      market: marketStatus(),
+    });
+  }
+  if (request.method === "POST" && path === "/api/auth/register") {
+    const body = await readJson(request);
+    const email = normalizeEmail(body.email);
+    const password = validatePassword(body.password);
+    if (database.accounts[email]) throw new HttpError(409, "An account already exists for this email.");
+    const accountId = randomUUID();
+    const credentials = await passwordRecord(password);
+    database.users[accountId] = {
+      id: accountId,
+      email,
+      isAccount: true,
+      createdAt: timestamp(),
+      lastSeenAt: user.lastSeenAt,
+      preferences: preferencesFor(user),
+    };
+    database.accounts[email] = { userId: accountId, passwordSalt: credentials.salt, passwordHash: credentials.hash };
+    await withUserLock(user.id, async () => {
+      mergeUserData(user.id, accountId);
+      await persist();
+    });
+    response.setHeader("set-cookie", [
+      sessionCookie("signal_account", accountId, request),
+      sessionCookie("signal_user", "", request, 0),
+    ]);
+    return send(response, 201, { ok: true, email });
+  }
+  if (request.method === "POST" && path === "/api/auth/login") {
+    const body = await readJson(request);
+    const email = normalizeEmail(body.email);
+    const password = validatePassword(body.password);
+    const account = database.accounts[email];
+    if (!account || !(await passwordMatches(password, account))) {
+      throw new HttpError(401, "Email or password is incorrect.");
+    }
+    await withUserLock(user.id, async () => {
+      if (!user.isAccount && user.id !== account.userId) mergeUserData(user.id, account.userId);
+      await persist();
+    });
+    response.setHeader("set-cookie", [
+      sessionCookie("signal_account", account.userId, request),
+      sessionCookie("signal_user", "", request, 0),
+    ]);
+    return send(response, 200, { ok: true, email });
+  }
+  if (request.method === "POST" && path === "/api/auth/logout") {
+    response.setHeader("set-cookie", sessionCookie("signal_account", "", request, 0));
+    return send(response, 200, { ok: true });
+  }
+  if (request.method === "GET" && path === "/api/preferences") {
+    return send(response, 200, { preferences: preferencesFor(user) });
+  }
+  if (request.method === "PATCH" && path === "/api/preferences") {
+    const { alertLevel } = await readJson(request);
+    if (!["high", "all", "off"].includes(alertLevel)) throw new HttpError(400, "Choose a valid alert setting.");
+    preferencesFor(user).alertLevel = alertLevel;
+    await persist();
+    return send(response, 200, { preferences: preferencesFor(user) });
+  }
   if (request.method === "GET" && path === "/api/search") {
     const query = new URL(request.url || "/", "http://localhost").searchParams.get("q");
     return send(response, 200, { results: await searchSymbols(query) });
@@ -417,6 +580,34 @@ async function api(request, response, user, path) {
   }
   if (request.method === "GET" && path === "/api/changes") {
     return send(response, 200, await watchlistPayload(user, true));
+  }
+  if (request.method === "GET" && path === "/api/history") {
+    const { entries } = await watchlistPayload(user);
+    const history = entries.flatMap((entry) =>
+      entry.status === "unavailable"
+        ? []
+        : historicSignals(entry).map((signal) => ({
+          ...signal,
+          ticker: entry.ticker,
+          name: entry.name,
+          currency: entry.currency,
+        })),
+    ).sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, 30);
+    return send(response, 200, { history });
+  }
+  if (request.method === "GET" && path.startsWith("/api/stocks/")) {
+    const ticker = normalizeTicker(decodeURIComponent(path.split("/").at(-1)));
+    if (!(database.watchlists[user.id] || []).some((item) => item.ticker === ticker)) {
+      throw new HttpError(404, "Add this stock to your watchlist before viewing its detail.");
+    }
+    const market = await marketData(ticker);
+    const signal = calculateSignal(market);
+    return send(response, 200, {
+      ...market,
+      signal: { ...signal, explanation: explainSignal(signal) },
+      history: market.history.slice(-30),
+      historicSignals: historicSignals(market),
+    });
   }
   if (request.method === "POST" && path === "/api/watchlist") {
     const ticker = await resolveTicker((await readJson(request)).ticker);

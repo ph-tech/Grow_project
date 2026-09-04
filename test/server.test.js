@@ -161,6 +161,47 @@ test("display helpers hide provider suffixes without altering canonical symbols"
   assert.equal(displayTickerMessage("AAPL is fine."), "AAPL is fine.");
 });
 
+test("account registration migrates a device watchlist and restores it on sign-in", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "signal-watch-account-"));
+  const provider = await startMockProvider();
+  const app = await startApp(directory, provider.url);
+  t.after(async () => {
+    await app.stop();
+    await provider.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const deviceSession = await api(app.baseUrl, "/api/changes");
+  const deviceCookie = deviceSession.response.headers.get("set-cookie").split(";")[0];
+  const added = await api(app.baseUrl, "/api/watchlist", {
+    method: "POST",
+    headers: { cookie: deviceCookie, "content-type": "application/json" },
+    body: JSON.stringify({ ticker: "TCS" }),
+  });
+  assert.equal(added.response.status, 201);
+
+  const registered = await api(app.baseUrl, "/api/auth/register", {
+    method: "POST",
+    headers: { cookie: deviceCookie, "content-type": "application/json" },
+    body: JSON.stringify({ email: "investor@example.com", password: "correct-horse-battery" }),
+  });
+  assert.equal(registered.response.status, 201);
+  const accountCookie = registered.response.headers.getSetCookie().find((cookie) => cookie.startsWith("signal_account=")).split(";")[0];
+  const migrated = await api(app.baseUrl, "/api/watchlist", { headers: { cookie: accountCookie } });
+  assert.deepEqual(migrated.body.entries.map((entry) => entry.ticker), ["TCS.NS"]);
+
+  const secondDevice = await api(app.baseUrl, "/api/changes");
+  const login = await api(app.baseUrl, "/api/auth/login", {
+    method: "POST",
+    headers: { cookie: secondDevice.response.headers.get("set-cookie").split(";")[0], "content-type": "application/json" },
+    body: JSON.stringify({ email: "investor@example.com", password: "correct-horse-battery" }),
+  });
+  assert.equal(login.response.status, 200);
+  const restoredCookie = login.response.headers.getSetCookie().find((cookie) => cookie.startsWith("signal_account=")).split(";")[0];
+  const restored = await api(app.baseUrl, "/api/watchlist", { headers: { cookie: restoredCookie } });
+  assert.deepEqual(restored.body.entries.map((entry) => entry.ticker), ["TCS.NS"]);
+});
+
 test("coalesces market requests, serializes concurrent mutations, and returns stale cached data", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "signal-watch-api-"));
   const provider = await startMockProvider();
