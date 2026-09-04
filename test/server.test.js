@@ -122,6 +122,24 @@ test("recovers corrupted persistence and cleans abandoned atomic-write files", a
     await rm(directory, { recursive: true, force: true });
   });
 
+  test("search resolves friendly NSE names and rejects empty queries", async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "signal-watch-search-"));
+    const provider = await startMockProvider();
+    const app = await startApp(directory, provider.url);
+    t.after(async () => {
+      await app.stop();
+      await provider.close();
+      await rm(directory, { recursive: true, force: true });
+    });
+
+    const search = await api(app.baseUrl, "/api/search?q=Reliance");
+    assert.equal(search.response.status, 200);
+    assert.equal(search.body.results[0].symbol, "RELIANCE.NS");
+    const empty = await api(app.baseUrl, "/api/search?q=");
+    assert.equal(empty.response.status, 400);
+    assert.match(empty.body.error, /at least 2 characters/i);
+  });
+
   const { body, response } = await api(app.baseUrl, "/api/changes", { headers: { cookie: "signal_user=not-a-uuid" } });
   assert.equal(response.status, 200);
   assert.deepEqual(body.entries, []);

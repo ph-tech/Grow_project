@@ -6,14 +6,14 @@ Signal Watch is a volatility-aware market watchlist for CODE 2026. It makes atte
 
 ## Run locally
 
-Requires Node.js 20 or later.
+Requires Node.js 22 or later.
 
 ```bash
 npm test
 npm start
 ```
 
-Open `http://localhost:3000`. Add NSE symbols such as `RELIANCE.NS`, `TCS.NS`, `INFY.NS`, or `HDFCBANK.NS`; prices are formatted in Indian rupees. The application creates a server-side device session cookie on first use and stores its data in `data/watchlist.json`. No market-data API key is required.
+Open `http://localhost:3000`. Search for companies or tickers such as `Reliance`, `TCS`, `Infosys`, `HDFC Bank`, `Apple`, or `AAPL`; canonical provider symbols are retained internally and prices use provider currency metadata. The application creates a server-side device session cookie on first use and stores its data in `data/watchlist.json`. No market-data API key is required.
 
 For Railway, mount a persistent volume at `/data` and set `DATA_DIR=/data`.
 

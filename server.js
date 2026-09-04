@@ -171,14 +171,15 @@ async function searchSymbols(query) {
   if (cached && cached.expiresAt > Date.now()) return cached.results;
   const local = knownSymbols.get(normalized.toUpperCase());
   let results = [];
-  try {
-    const response = await yahooFinance.search(normalized, { quotesCount: 12, newsCount: 0 });
-    results = (response.quotes || []).map(searchResult).filter(Boolean);
-  } catch (error) {
-    if (!local) throw new HttpError(502, `Search provider unavailable: ${error.message}`);
-  }
-  if (local && !results.some((result) => result.symbol === local)) {
-    results.unshift({ symbol: local, name: normalized, exchange: local.endsWith(".NS") ? "NSE" : "NASDAQ", exchangeCode: local.endsWith(".NS") ? "NSI" : "NMS", currency: local.endsWith(".NS") ? "INR" : "USD" });
+  if (local) {
+    results = [{ symbol: local, name: normalized, exchange: local.endsWith(".NS") ? "NSE" : "NASDAQ", exchangeCode: local.endsWith(".NS") ? "NSI" : "NMS", currency: local.endsWith(".NS") ? "INR" : "USD" }];
+  } else {
+    try {
+      const response = await yahooFinance.search(normalized, { quotesCount: 12, newsCount: 0 });
+      results = (response.quotes || []).map(searchResult).filter(Boolean);
+    } catch (error) {
+      throw new HttpError(502, `Search provider unavailable: ${error.message}`);
+    }
   }
   results.sort((a, b) => {
     const aNse = a.symbol.endsWith(".NS") ? 0 : 1;
