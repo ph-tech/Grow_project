@@ -45,6 +45,7 @@ function health(entry) {
   if (entry.sourceConflict) return `<span class="health conflict">Source conflict</span>`;
   if (entry.secondaryError) return `<span class="health delayed">Cross-check unavailable</span>`;
   if (entry.status === "stale" || entry.status === "delayed") return `<span class="health delayed">${escaped(entry.freshness?.label || "Data delayed")}</span>`;
+  if (entry.status === "closed") return `<span class="health closed">${escaped(entry.freshness?.label || "Market closed")}</span>`;
   return `<span class="health live">${escaped(entry.freshness.label)}</span>`;
 }
 
@@ -96,7 +97,7 @@ function render(data) {
       : `<div class="calm"><b>No unusual moves right now.</b><span>Your stocks moved within their normal range, or volume did not confirm the move.</span></div>`;
     watchlist.innerHTML = entries.map(stockRow).join("");
   }
-  const hasConcern = entries.some((entry) => entry.status !== "live" || entry.sourceConflict);
+  const hasConcern = entries.some((entry) => (entry.status !== "live" && entry.status !== "closed") || entry.sourceConflict);
   marketStatus.textContent = hasConcern ? "Some data needs attention" : "Market data healthy";
   marketStatus.classList.toggle("attention", hasConcern);
 }
