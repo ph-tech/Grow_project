@@ -6,6 +6,7 @@ import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { displayTicker, displayTickerMessage } from "../public/ticker-utils.js";
 
 const root = new URL("..", import.meta.url).pathname;
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -147,6 +148,17 @@ test("search resolves friendly NSE names and rejects empty queries", async (t) =
   const empty = await api(app.baseUrl, "/api/search?q=");
   assert.equal(empty.response.status, 400);
   assert.match(empty.body.error, /at least 2 characters/i);
+});
+
+test("display helpers hide provider suffixes without altering canonical symbols", () => {
+  assert.equal(displayTicker("RELIANCE.NS"), "RELIANCE");
+  assert.equal(displayTicker("TCS.NS"), "TCS");
+  assert.equal(displayTicker("500325.BO"), "500325");
+  assert.equal(displayTicker("AAPL"), "AAPL");
+  assert.equal(displayTicker("BRK-B"), "BRK-B");
+  assert.equal(displayTickerMessage("TCS.NS is already in your watchlist."), "TCS is already in your watchlist.");
+  assert.equal(displayTickerMessage("500325.BO removed."), "500325 removed.");
+  assert.equal(displayTickerMessage("AAPL is fine."), "AAPL is fine.");
 });
 
 test("coalesces market requests, serializes concurrent mutations, and returns stale cached data", async (t) => {
