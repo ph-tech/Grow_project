@@ -17,7 +17,7 @@ Open `http://localhost:3000`. Add NSE symbols such as `RELIANCE.NS`, `TCS.NS`, `
 
 ### Meaningful change
 
-For each stock, Signal Watch calculates the standard deviation of its recent daily percentage returns (up to 20 observations, with a 0.25% floor). A current move is meaningful when it is at least **1.25x that stock's normal daily swing**, or at least **0.9x normal with 2x average volume**. The ranked signal score multiplies that relative move by a capped volume-confidence boost. This keeps routine volatility out of the feed while promoting moves with real participation. Each card exposes the raw daily move, its normal-range multiple, volume multiple, score, and a plain-language reason.
+For each stock, Signal Watch calculates the **sample** standard deviation of its recent daily percentage returns (up to 20 observations, with a 0.25% floor applied before the comparison). A current move is meaningful when it is at least **1.25x that stock's normal daily swing**, or at least **0.9x normal with 2x average volume**. The ranked signal score multiplies that relative move by a capped volume-confidence boost (at most 1.7x the range score). This keeps routine volatility out of the feed while promoting moves with real participation. Each card exposes the raw daily move, its normal-range multiple, volume multiple, score, and a plain-language reason.
 
 ### Persistence and sessions
 
@@ -33,7 +33,7 @@ The immediate bottleneck is upstream market-data rate limits, not scoring: calcu
 
 ### Time-pressure trade-off
 
-I chose an HTTP-only device identity over full account authentication and a file-backed server store over provisioning Postgres. That preserves the essential cross-visit backend persistence and makes the app runnable in one command, but it does not yet let a user deliberately merge their watchlist across separate devices.
+I chose an HTTP-only device identity over full account authentication and a file-backed server store over provisioning Postgres. That preserves the essential cross-visit backend persistence and makes the app runnable in one command, but it does not yet let a user deliberately merge their watchlist across separate devices. The atomic write queue and in-flight market-request deduplication operate inside one Node process; a multi-instance deployment still needs Postgres and Redis before it can coordinate writes and cache refreshes across instances.
 
 ## Product pitch
 
