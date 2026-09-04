@@ -58,7 +58,7 @@ function signalCard(entry, index) {
     <div class="signal-main">
       <div class="ticker-row"><strong>${escaped(ticker)}</strong><span>${escaped(entry.name)}</span></div>
       <p>${escaped(signal.explanation)}</p>
-      ${entry.sinceVisitPercent !== null ? `<small>Since last visit: <b>${formatPercent(entry.sinceVisitPercent)}</b></small>` : `<small>First check-in: baseline saved now.</small>`}
+      ${entry.sinceVisitPercent !== null ? `<small class="since-visit ${entry.sinceVisitPercent >= 0 ? "up" : "down"}">Since last visit: <b>${formatPercent(entry.sinceVisitPercent)}</b></small>` : `<small>First check-in: baseline saved now.</small>`}
     </div>
     <div class="signal-price"><b>${formatPrice(entry.price, entry.currency)}</b><span class="${direction}">${formatPercent(signal.changePercent)}</span></div>
     <div class="score"><b>${formatNumber(signal.score)}</b><span>signal score</span></div>
