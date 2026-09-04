@@ -1,3 +1,5 @@
+import { displayTicker, displayTickerMessage } from "./ticker-utils.js";
+
 const signals = document.querySelector("#signals");
 const watchlist = document.querySelector("#watchlist");
 const form = document.querySelector("#add-stock");
@@ -6,24 +8,26 @@ const toast = document.querySelector("#toast");
 const marketStatus = document.querySelector("#market-status");
 const emptyTemplate = document.querySelector("#empty-state");
 const suggestions = document.querySelector("#suggestions");
+const accountDialog = document.querySelector("#account-dialog");
+const detailDialog = document.querySelector("#detail-dialog");
 let selectedTicker = "";
 let suggestionResults = [];
 let activeSuggestion = -1;
 let searchTimer;
-
-import { displayTicker, displayTickerMessage } from "./ticker-utils.js";
+let session = { authenticated: false };
 
 const formatPrice = (value, currency) => {
   if (!Number.isFinite(value)) return "—";
-  if (!currency) return value.toFixed(2);
   try {
-    return new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 2 }).format(value);
+    return new Intl.NumberFormat(currency === "INR" ? "en-IN" : undefined, {
+      style: "currency", currency: currency || "INR", maximumFractionDigits: 2,
+    }).format(value);
   } catch {
     return value.toFixed(2);
   }
 };
-const formatPercent = (value) => (Number.isFinite(value) ? `${value >= 0 ? "+" : ""}${value.toFixed(2)}%` : "—");
-const formatNumber = (value, digits = 1) => (Number.isFinite(value) ? value.toFixed(digits) : "—");
+const formatPercent = (value) => Number.isFinite(value) ? `${value >= 0 ? "+" : ""}${value.toFixed(2)}%` : "—";
+const formatNumber = (value, digits = 1) => Number.isFinite(value) ? value.toFixed(digits) : "—";
 const escaped = (value) => String(value).replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[character]);
 
 function notice(message, isError = false) {
@@ -46,22 +50,27 @@ function health(entry) {
   if (entry.secondaryError) return `<span class="health delayed">Cross-check unavailable</span>`;
   if (entry.status === "stale" || entry.status === "delayed") return `<span class="health delayed">${escaped(entry.freshness?.label || "Data delayed")}</span>`;
   if (entry.status === "closed") return `<span class="health closed">${escaped(entry.freshness?.label || "Market closed")}</span>`;
-  return `<span class="health live">${escaped(entry.freshness.label)}</span>`;
+  return `<span class="health live">${escaped(entry.freshness?.label || "Live")}</span>`;
+}
+
+function peerLine(peer) {
+  if (!peer?.meaningful) return "";
+  return `<small class="peer-line"><b>Peer divergence:</b> ${escaped(peer.explanation)}</small>`;
 }
 
 function signalCard(entry, index) {
   const signal = entry.signal;
   const direction = signal.changePercent >= 0 ? "up" : "down";
-  const ticker = displayTicker(entry.ticker);
-  return `<article class="signal-card ${direction}">
-    <div class="rank">0${index + 1}</div>
+  return `<article class="signal-card ${direction}" data-detail="${escaped(entry.ticker)}">
+    <div class="rank">${String(index + 1).padStart(2, "0")}</div>
     <div class="signal-main">
-      <div class="ticker-row"><strong>${escaped(ticker)}</strong><span>${escaped(entry.name)}</span></div>
+      <div class="ticker-row"><strong>${escaped(displayTicker(entry.ticker))}</strong><span>${escaped(entry.name)}</span></div>
       <p>${escaped(signal.explanation)}</p>
+      ${peerLine(entry.peer)}
       ${entry.sinceVisitPercent !== null ? `<small class="since-visit ${entry.sinceVisitPercent >= 0 ? "up" : "down"}">Since last visit: <b>${formatPercent(entry.sinceVisitPercent)}</b></small>` : `<small>First check-in: baseline saved now.</small>`}
     </div>
     <div class="signal-price"><b>${formatPrice(entry.price, entry.currency)}</b><span class="${direction}">${formatPercent(signal.changePercent)}</span></div>
-    <div class="score"><b>${formatNumber(signal.score)}</b><span>signal score</span></div>
+    <div class="score"><b>${formatNumber(entry.priority || signal.score)}</b><span>signal score</span></div>
   </article>`;
 }
 
@@ -72,13 +81,21 @@ function stockRow(entry) {
   }
   const direction = entry.signal.changePercent >= 0 ? "up" : "down";
   const volume = entry.signal.volumeRatio ? `${formatNumber(entry.signal.volumeRatio)}x avg` : "No volume";
-  return `<tr>
+  return `<tr class="stock-row" data-detail="${escaped(entry.ticker)}">
     <td><strong>${escaped(ticker)}</strong><span>${escaped(entry.name)}</span></td>
     <td class="number">${formatPrice(entry.price, entry.currency)}</td>
     <td class="number ${direction}">${formatPercent(entry.signal.changePercent)}</td>
     <td>${volume}</td><td>${health(entry)}</td>
     <td><button class="remove" data-ticker="${escaped(entry.ticker)}" aria-label="Remove ${escaped(ticker)}">×</button></td>
   </tr>`;
+}
+
+function renderMarket(market) {
+  if (!market) return;
+  marketStatus.textContent = market.label;
+  marketStatus.classList.toggle("attention", !market.open);
+  document.querySelector("#market-session-title").textContent = market.label;
+  document.querySelector("#market-session-copy").textContent = `${market.hours}. ${market.open ? "Live quotes are assessed for freshness." : "Previous-session quotes are kept separate from stale-data warnings."}`;
 }
 
 function render(data) {
@@ -91,15 +108,14 @@ function render(data) {
     signals.replaceChildren(emptyTemplate.content.cloneNode(true));
     watchlist.innerHTML = "";
   } else {
-    const flagged = entries.filter((entry) => entry.signal?.meaningful);
+    const flagged = entries.filter((entry) => entry.signal?.meaningful || entry.peer?.meaningful);
     signals.innerHTML = flagged.length
       ? flagged.map(signalCard).join("")
-      : `<div class="calm"><b>No unusual moves right now.</b><span>Your stocks moved within their normal range, or volume did not confirm the move.</span></div>`;
+      : `<div class="calm"><b>No unusual moves right now.</b><span>Your stocks moved within their normal range, and no tracked peer group is diverging.</span></div>`;
     watchlist.innerHTML = entries.map(stockRow).join("");
   }
-  const hasConcern = entries.some((entry) => (entry.status !== "live" && entry.status !== "closed") || entry.sourceConflict);
-  marketStatus.textContent = hasConcern ? "Some data needs attention" : "Market data healthy";
-  marketStatus.classList.toggle("attention", hasConcern);
+  renderMarket(data.market);
+  document.querySelector("#alert-level").value = data.preferences?.alertLevel || "high";
 }
 
 async function load(markSeen = false) {
@@ -112,29 +128,6 @@ async function load(markSeen = false) {
     signals.removeAttribute("aria-busy");
   }
 }
-
-form.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const ticker = selectedTicker || input.value.trim();
-  if (!ticker) return;
-  const button = form.querySelector("button");
-  button.disabled = true;
-  try {
-    await request("/api/watchlist", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ticker }),
-    });
-    input.value = "";
-    selectedTicker = "";
-    notice(`${displayTicker(ticker)} added to your watchlist.`);
-    await load(false);
-  } catch (error) {
-    notice(error.message, true);
-  } finally {
-    button.disabled = false;
-  }
-});
 
 function closeSuggestions() {
   suggestions.hidden = true;
@@ -164,15 +157,107 @@ function renderSuggestions(results) {
       event.preventDefault();
       chooseSuggestion(index);
     });
-    const name = document.createElement("strong");
-    name.textContent = result.name;
-    const detail = document.createElement("span");
-    detail.textContent = `${displayTicker(result.symbol)}${result.exchange ? ` · ${result.exchange}` : ""}`;
-    button.append(name, detail);
+    button.innerHTML = `<strong>${escaped(result.name)}</strong><span>${escaped(displayTicker(result.symbol))}${result.exchange ? ` · ${escaped(result.exchange)}` : ""}</span>`;
     suggestions.append(button);
   });
   suggestions.hidden = results.length === 0;
 }
+
+function showView(name) {
+  document.querySelectorAll(".view").forEach((view) => view.classList.toggle("active", view.id === `${name}-view`));
+  document.querySelectorAll(".nav-link").forEach((button) => button.classList.toggle("active", button.dataset.view === name));
+  if (name === "history") loadHistory();
+}
+
+async function loadHistory() {
+  const target = document.querySelector("#history-list");
+  target.innerHTML = `<div class="calm"><b>Loading signal history…</b></div>`;
+  try {
+    const { history } = await request("/api/history");
+    target.innerHTML = history.length
+      ? history.map((item) => `<article class="history-item">
+          <div><strong>${escaped(displayTicker(item.ticker))}</strong><span>${new Date(item.at).toLocaleDateString()}</span></div>
+          <p>${escaped(item.explanation)}</p><b class="${item.changePercent >= 0 ? "up" : "down"}">${formatPercent(item.changePercent)}</b>
+        </article>`).join("")
+      : `<div class="calm"><b>No historical signals yet.</b><span>Add stocks and revisit after market movements to build your signal record.</span></div>`;
+  } catch (error) {
+    target.innerHTML = `<div class="calm"><b>Could not load signal history.</b><span>${escaped(error.message)}</span></div>`;
+  }
+}
+
+async function showDetail(ticker) {
+  detailDialog.showModal();
+  const target = document.querySelector("#stock-detail");
+  target.innerHTML = `<p class="label">STOCK DETAIL</p><h2>${escaped(displayTicker(ticker))}</h2><p>Loading detail…</p>`;
+  try {
+    const entry = await request(`/api/stocks/${encodeURIComponent(ticker)}`);
+    const points = entry.history.map((day) => day.close).filter(Number.isFinite);
+    const minimum = Math.min(...points);
+    const maximum = Math.max(...points);
+    target.innerHTML = `<p class="label">${escaped(entry.exchange || "MARKET")} · LAST 30 SESSIONS</p>
+      <h2>${escaped(displayTicker(entry.ticker))}</h2><p class="detail-name">${escaped(entry.name)}</p>
+      <div class="detail-price">${formatPrice(entry.price, entry.currency)} <span class="${entry.signal.changePercent >= 0 ? "up" : "down"}">${formatPercent(entry.signal.changePercent)}</span></div>
+      <p>${escaped(entry.signal.explanation)}</p>
+      <div class="range-chart">${points.map((price) => `<i style="height:${Math.max(8, ((price - minimum) / Math.max(maximum - minimum, 0.01)) * 100)}%"></i>`).join("")}</div>
+      <div class="detail-stats"><span><b>${formatNumber(entry.signal.volatility, 2)}%</b> usual swing</span><span><b>${entry.signal.volumeRatio ? `${formatNumber(entry.signal.volumeRatio)}x` : "—"}</b> volume</span><span><b>${entry.historicSignals.length}</b> past signals</span></div>`;
+  } catch (error) {
+    target.innerHTML = `<p class="label">STOCK DETAIL</p><h2>Unavailable</h2><p>${escaped(error.message)}</p>`;
+  }
+}
+
+function renderSession() {
+  const title = document.querySelector("#account-title");
+  const copy = document.querySelector("#account-copy");
+  const button = document.querySelector("#account-settings-button");
+  if (session.authenticated) {
+    document.querySelector("#account-button").textContent = session.email;
+    title.textContent = "Account connected";
+    copy.textContent = `Your watchlist is linked to ${session.email} and can be accessed after signing in on another device.`;
+    button.textContent = "Manage account";
+  } else {
+    document.querySelector("#account-button").textContent = "Save across devices";
+    title.textContent = "Device-only watchlist";
+    copy.textContent = "Create an account to intentionally access the same watchlist from another device.";
+    button.textContent = "Create account";
+  }
+}
+
+async function loadSession() {
+  session = await request("/api/session");
+  renderSession();
+}
+
+function openAccountDialog(login = false) {
+  document.querySelector("#auth-heading").textContent = login ? "Sign in to your account" : "Create your account";
+  document.querySelector("#auth-copy").textContent = login
+    ? "Sign in to restore your saved watchlist on this device."
+    : "Your current device watchlist will be kept and linked to your account.";
+  document.querySelector("#auth-submit").textContent = login ? "Sign in" : "Create account";
+  document.querySelector("#auth-password").autocomplete = login ? "current-password" : "new-password";
+  document.querySelector("#auth-switch").textContent = login ? "New here? Create an account" : "Already have an account? Sign in";
+  document.querySelector("#auth-form").dataset.mode = login ? "login" : "register";
+  document.querySelector("#logout-button").hidden = !session.authenticated;
+  accountDialog.showModal();
+}
+
+form.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const ticker = selectedTicker || input.value.trim();
+  if (!ticker) return;
+  const button = form.querySelector("button");
+  button.disabled = true;
+  try {
+    await request("/api/watchlist", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ticker }) });
+    input.value = "";
+    selectedTicker = "";
+    notice(`${displayTicker(ticker)} added to your watchlist.`);
+    await load(false);
+  } catch (error) {
+    notice(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
 
 input.addEventListener("input", () => {
   selectedTicker = "";
@@ -198,26 +283,70 @@ input.addEventListener("keydown", (event) => {
   } else if (event.key === "Enter" && activeSuggestion >= 0) {
     event.preventDefault();
     chooseSuggestion(activeSuggestion);
-  } else if (event.key === "Escape") {
-    closeSuggestions();
-  }
+  } else if (event.key === "Escape") closeSuggestions();
 });
 
 document.addEventListener("click", (event) => {
   if (!form.contains(event.target)) closeSuggestions();
 });
-
-watchlist.addEventListener("click", async (event) => {
-  const button = event.target.closest(".remove");
-  if (!button) return;
+document.querySelectorAll(".nav-link").forEach((button) => button.addEventListener("click", () => showView(button.dataset.view)));
+document.querySelector("#refresh").addEventListener("click", () => load(true));
+document.querySelector("#account-button").addEventListener("click", () => openAccountDialog(session.authenticated));
+document.querySelector("#account-settings-button").addEventListener("click", () => openAccountDialog(session.authenticated));
+document.querySelectorAll(".dialog-close").forEach((button) => button.addEventListener("click", () => button.closest("dialog").close()));
+document.querySelector("#auth-switch").addEventListener("click", () => openAccountDialog(document.querySelector("#auth-form").dataset.mode !== "login"));
+document.querySelector("#logout-button").addEventListener("click", async () => {
+  await request("/api/auth/logout", { method: "POST" });
+  accountDialog.close();
+  await loadSession();
+  notice("Signed out. Your account data remains safe.");
+});
+document.querySelector("#auth-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const mode = event.currentTarget.dataset.mode;
+  const button = document.querySelector("#auth-submit");
+  button.disabled = true;
   try {
-    await request(`/api/watchlist/${encodeURIComponent(button.dataset.ticker)}`, { method: "DELETE" });
-    notice(`${displayTicker(button.dataset.ticker)} removed.`);
+    await request(`/api/auth/${mode}`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: document.querySelector("#auth-email").value, password: document.querySelector("#auth-password").value }),
+    });
+    accountDialog.close();
+    await loadSession();
     await load(false);
+    notice(mode === "login" ? "Watchlist restored." : "Account created. Your watchlist now syncs across devices.");
+  } catch (error) {
+    notice(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
+document.querySelector("#save-settings").addEventListener("click", async () => {
+  try {
+    await request("/api/preferences", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ alertLevel: document.querySelector("#alert-level").value }) });
+    notice("Signal digest setting saved.");
   } catch (error) {
     notice(error.message, true);
   }
 });
+watchlist.addEventListener("click", async (event) => {
+  const remove = event.target.closest(".remove");
+  if (remove) {
+    try {
+      await request(`/api/watchlist/${encodeURIComponent(remove.dataset.ticker)}`, { method: "DELETE" });
+      notice(`${displayTicker(remove.dataset.ticker)} removed.`);
+      await load(false);
+    } catch (error) {
+      notice(error.message, true);
+    }
+    return;
+  }
+  const row = event.target.closest("[data-detail]");
+  if (row) showDetail(row.dataset.detail);
+});
+signals.addEventListener("click", (event) => {
+  const card = event.target.closest("[data-detail]");
+  if (card) showDetail(card.dataset.detail);
+});
 
-document.querySelector("#refresh").addEventListener("click", () => load(true));
-load(true);
+Promise.all([loadSession(), load(true)]).catch((error) => notice(error.message, true));

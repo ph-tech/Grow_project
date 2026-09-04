@@ -47,7 +47,13 @@ Postgres (users, watchlist_items, market_snapshots)
   + bounded background worker queue (scheduled refreshes instead of per-request fetches)
 ```
 
+For Railway, mount a persistent volume at `/data` and set `DATA_DIR=/data`.
+
 ## Engineering decisions
+
+### Beyond the basic watchlist
+
+Signal Watch includes four focused product surfaces beyond the dashboard. **Peer divergence** compares a stock with two or more watched sector peers and flags an unusual outperformer or underperformer; the first groups cover IT services, private banks, auto, and energy. **Stock detail** exposes the 30-session range, usual swing, volume baseline, and recorded signals. **Signal history** is a dated record of meaningful daily moves. **Settings** offers a persisted high-confidence/all/off signal-digest filter and explains the current NSE session status. A password-protected account can merge the device watchlist into a server account and restore it on another device.
 
 ### Meaningful change
 
@@ -75,7 +81,7 @@ The immediate bottleneck is upstream market-data rate limits, not scoring: calcu
 
 ### Time-pressure trade-off
 
-I chose an HTTP-only device identity over full account authentication and a file-backed server store over provisioning Postgres. That preserves the essential cross-visit backend persistence and makes the app runnable in one command, but it does not yet let a user deliberately merge their watchlist across separate devices. The atomic write queue and in-flight market-request deduplication operate inside one Node process; a multi-instance deployment still needs Postgres and Redis before it can coordinate writes and cache refreshes across instances.
+I chose a self-contained email/password account over a third-party OAuth integration and a file-backed server store over provisioning Postgres. It makes cross-device watchlist restoration possible without requiring external credentials, but it does not provide password reset, email verification, or multi-instance coordination. The atomic write queue and in-flight market-request deduplication operate inside one Node process; a multi-instance deployment still needs Postgres and Redis before it can coordinate writes and cache refreshes across instances.
 
 ## Why I made these choices
 
@@ -97,9 +103,7 @@ Same-browser/device revisits persist automatically through the device-session co
 - **Source conflicts** — when the Stooq cross-check disagrees with the Yahoo primary price by more than 1.5%, the entry is marked with a source-conflict health label instead of failing silently.
 - **Unavailable/delisted symbols** — tickers with no usable price history (delisted, no activity, or an invalid symbol) stay in the watchlist as "unavailable" with an explanatory message rather than disappearing.
 - **Duplicate/concurrent mutations** — concurrent add/remove requests for the same user serialize through a per-user mutation lock, and concurrent requests for the same ticker share one in-flight market-data fetch instead of issuing duplicate provider calls.
-- **Atomic persistence** — every write goes through a temp-file-then-rename sequence so a crash or concurrent write cannot leave `data/watchlist.json` truncated or corrupted; corrupted files found at startup are quarantined instead of crashing the server.
 
 ## Product pitch
 
 I built Signal Watch to answer a practical question: what changed in my stocks since I last checked? Instead of ranking the largest percentage moves, it compares each move with the stock's own recent volatility and checks whether volume confirms it. A calm stock moving 1% can matter more than a volatile stock moving 4%. The feed explains each signal in plain language and keeps the full watchlist below it. I designed it for NSE symbols and rupee prices. I chose device-backed server persistence over full login for quicker setup; the trade-off is that watchlists cannot yet merge across devices.
-
