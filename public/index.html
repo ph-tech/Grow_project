@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f4efe6" />
+    <title>Signal Watch</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main>
+      <header class="topbar">
+        <div>
+          <h1>Signal Watch</h1>
+        </div>
+        <div class="status" id="market-status">Connecting to market data</div>
+      </header>
+
+      <section class="intro">
+        <div>
+          <p class="label">YOUR MARKET, FILTERED</p>
+          <h2>What changed<br /><em>while you were away.</em></h2>
+          <p class="subcopy">Moves earn attention only when they are unusual for that stock, with volume as the confidence check.</p>
+        </div>
+        <form class="add-stock" id="add-stock">
+          <label for="ticker">Add to watchlist</label>
+          <div>
+            <input id="ticker" name="ticker" autocomplete="off" placeholder="RELIANCE.NS" maxlength="15" required />
+            <button type="submit">Add stock <span>↗</span></button>
+          </div>
+          <p>Try RELIANCE.NS, TCS.NS, INFY.NS, HDFCBANK.NS</p>
+        </form>
+      </section>
+
+      <section class="signal-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="label">RANKED BY RELATIVE SURPRISE</p>
+            <h2>Signals since your last visit</h2>
+          </div>
+          <button class="quiet-button" id="refresh">Refresh data</button>
+        </div>
+        <p class="panel-note" id="last-visit"></p>
+        <div id="signals" class="signals"></div>
+      </section>
+
+      <section class="watchlist-section">
+        <div class="panel-heading">
+          <div>
+            <p class="label">LATEST VIEW</p>
+            <h2>Full watchlist</h2>
+          </div>
+          <p class="count" id="stock-count"></p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Stock</th><th>Price</th><th>Day move</th><th>Volume</th><th>Data health</th><th></th></tr></thead>
+            <tbody id="watchlist"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+    <template id="empty-state">
+      <div class="empty">
+        <div class="empty-mark">+</div>
+        <h3>Your signal desk is ready.</h3>
+        <p>Add a stock to start building a market memory that follows you across visits.</p>
+      </div>
+    </template>
+    <div class="toast" id="toast" role="status"></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
