@@ -2,6 +2,8 @@
 
 Signal Watch is a volatility-aware market watchlist for CODE 2026. It makes attention a relative concept: a calm stock moving 1% can be more important than a volatile stock moving 4%.
 
+**Live demo:** https://growproject-production.up.railway.app/
+
 ## Run locally
 
 Requires Node.js 20 or later.
@@ -12,6 +14,8 @@ npm start
 ```
 
 Open `http://localhost:3000`. Add NSE symbols such as `RELIANCE.NS`, `TCS.NS`, `INFY.NS`, or `HDFCBANK.NS`; prices are formatted in Indian rupees. The application creates a server-side device session cookie on first use and stores its data in `data/watchlist.json`. No market-data API key is required.
+
+For Railway, mount a persistent volume at `/data` and set `DATA_DIR=/data`.
 
 ## Engineering decisions
 
@@ -37,4 +41,4 @@ I chose an HTTP-only device identity over full account authentication and a file
 
 ## Product pitch
 
-I built Signal Watch to answer the question I actually have when reopening a watchlist: what deserves my attention now? Instead of rewarding the largest percentage move, it compares each move with that stock’s own recent behavior and uses volume to decide whether the move has conviction. The ranked feed says why a stock rose to the top in plain language, while the latest view keeps the full list available. I used a warm, compact market-desk interface with amber reserved for attention and separate up/down colors. I chose device-backed persistence over full login so the complete flow runs immediately; the trade-off is no intentional cross-device identity merge yet.
+I built Signal Watch to answer a practical question: what changed in my stocks since I last checked? Instead of ranking the largest percentage moves, it compares each move with the stock's own recent volatility and checks whether volume confirms it. A calm stock moving 1% can matter more than a volatile stock moving 4%. The feed explains each signal in plain language and keeps the full watchlist below it. I designed it for NSE symbols and rupee prices. I chose device-backed server persistence over full login for quicker setup; the trade-off is that watchlists cannot yet merge across devices.
