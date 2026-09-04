@@ -3,6 +3,7 @@ import { readFile, writeFile, mkdir, readdir, rename, unlink } from "node:fs/pro
 import { createServer } from "node:http";
 import { extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import YahooFinance from "yahoo-finance2";
 import { calculateSignal, explainSignal } from "./lib/scoring.js";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
@@ -20,6 +21,13 @@ let writeChain = Promise.resolve();
 let database = { users: {}, watchlists: {}, snapshots: {}, cache: {} };
 const inFlightMarketRequests = new Map();
 const userLocks = new Map();
+const searchCache = new Map();
+const yahooFinance = new YahooFinance();
+const knownSymbols = new Map([
+  ["TCS", "TCS.NS"], ["RELIANCE", "RELIANCE.NS"], ["RELIANCE INDUSTRIES", "RELIANCE.NS"],
+  ["INFOSYS", "INFY.NS"], ["INFY", "INFY.NS"], ["HDFC BANK", "HDFCBANK.NS"],
+  ["APPLE", "AAPL"], ["AAPL", "AAPL"], ["MICROSOFT", "MSFT"], ["MSFT", "MSFT"],
+]);
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -132,10 +140,65 @@ async function currentUser(request, response) {
 
 function normalizeTicker(value) {
   const ticker = String(value || "").trim().toUpperCase();
-  if (!/^[A-Z0-9.^-]{1,15}$/.test(ticker)) {
+  if (!/^[A-Z0-9.^-]{1,30}$/.test(ticker)) {
     throw new HttpError(400, "Use a valid ticker, such as RELIANCE.NS or TCS.NS.");
   }
   return ticker;
+}
+
+function normalizeSearchQuery(value) {
+  const query = String(value || "").trim().replace(/\s+/g, " ");
+  if (query.length < 2) throw new HttpError(400, "Search query must contain at least 2 characters.");
+  if (query.length > 80) throw new HttpError(400, "Search query is too long.");
+  return query;
+}
+
+function searchResult(quote) {
+  const symbol = String(quote.symbol || "").toUpperCase();
+  if (!/^[A-Z0-9.^-]{1,30}$/.test(symbol)) return null;
+  return {
+    symbol,
+    name: quote.longname || quote.shortname || symbol,
+    exchange: quote.exchangeDisplay || quote.exchange || null,
+    exchangeCode: quote.exchange || null,
+    currency: quote.currency || null,
+  };
+}
+
+async function searchSymbols(query) {
+  const normalized = normalizeSearchQuery(query);
+  const cached = searchCache.get(normalized.toUpperCase());
+  if (cached && cached.expiresAt > Date.now()) return cached.results;
+  const local = knownSymbols.get(normalized.toUpperCase());
+  let results = [];
+  try {
+    const response = await yahooFinance.search(normalized, { quotesCount: 12, newsCount: 0 });
+    results = (response.quotes || []).map(searchResult).filter(Boolean);
+  } catch (error) {
+    if (!local) throw new HttpError(502, `Search provider unavailable: ${error.message}`);
+  }
+  if (local && !results.some((result) => result.symbol === local)) {
+    results.unshift({ symbol: local, name: normalized, exchange: local.endsWith(".NS") ? "NSE" : "NASDAQ", exchangeCode: local.endsWith(".NS") ? "NSI" : "NMS", currency: local.endsWith(".NS") ? "INR" : "USD" });
+  }
+  results.sort((a, b) => {
+    const aNse = a.symbol.endsWith(".NS") ? 0 : 1;
+    const bNse = b.symbol.endsWith(".NS") ? 0 : 1;
+    return aNse - bNse;
+  });
+  results = results.slice(0, 8);
+  searchCache.set(normalized.toUpperCase(), { results, expiresAt: Date.now() + 5 * 60_000 });
+  return results;
+}
+
+async function resolveTicker(value) {
+  const input = String(value || "").trim();
+  if (!input) throw new HttpError(400, "Enter a ticker or company name.");
+  const known = knownSymbols.get(input.toUpperCase());
+  if (known) return known;
+  if (/^[A-Za-z0-9-]+(?:\.[A-Za-z]+)?$/.test(input)) return normalizeTicker(input);
+  const results = await searchSymbols(input);
+  if (!results.length) throw new HttpError(400, "No matching company or ticker was found.");
+  return results[0].symbol;
 }
 
 function timestamp() {
@@ -189,6 +252,10 @@ async function fetchYahoo(ticker) {
     volume: Number(result.meta.regularMarketVolume ?? latest.volume) || null,
     history,
     provider: "Yahoo Finance",
+    currency: result.meta.currency || null,
+    exchange: result.meta.exchangeName || null,
+    exchangeCode: result.meta.exchange || null,
+    exchangeTimezone: result.meta.exchangeTimezoneName || null,
     providerAt: result.meta.regularMarketTime
       ? new Date(result.meta.regularMarketTime * 1000).toISOString()
       : latest.at,
@@ -290,6 +357,10 @@ function saveSnapshot(data) {
     price: data.price,
     volume: data.volume,
     provider: data.provider,
+    currency: data.currency || null,
+    exchange: data.exchange || null,
+    exchangeCode: data.exchangeCode || null,
+    exchangeTimezone: data.exchangeTimezone || null,
   }].slice(-100);
 }
 
@@ -338,6 +409,10 @@ async function watchlistPayload(user, markSeen = false) {
 }
 
 async function api(request, response, user, path) {
+  if (request.method === "GET" && path === "/api/search") {
+    const query = new URL(request.url || "/", "http://localhost").searchParams.get("q");
+    return send(response, 200, { results: await searchSymbols(query) });
+  }
   if (request.method === "GET" && path === "/api/watchlist") {
     return send(response, 200, await watchlistPayload(user));
   }
@@ -345,7 +420,7 @@ async function api(request, response, user, path) {
     return send(response, 200, await watchlistPayload(user, true));
   }
   if (request.method === "POST" && path === "/api/watchlist") {
-    const ticker = normalizeTicker((await readJson(request)).ticker);
+    const ticker = await resolveTicker((await readJson(request)).ticker);
     const market = await marketData(ticker);
     await withUserLock(user.id, async () => {
       const items = database.watchlists[user.id] || [];

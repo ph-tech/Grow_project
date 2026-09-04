@@ -5,11 +5,21 @@ const input = document.querySelector("#ticker");
 const toast = document.querySelector("#toast");
 const marketStatus = document.querySelector("#market-status");
 const emptyTemplate = document.querySelector("#empty-state");
+const suggestions = document.querySelector("#suggestions");
+let selectedTicker = "";
+let suggestionResults = [];
+let activeSuggestion = -1;
+let searchTimer;
 
-const formatPrice = (value) =>
-  Number.isFinite(value)
-    ? new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 2 }).format(value)
-    : "—";
+const formatPrice = (value, currency) => {
+  if (!Number.isFinite(value)) return "—";
+  if (!currency) return value.toFixed(2);
+  try {
+    return new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 2 }).format(value);
+  } catch {
+    return value.toFixed(2);
+  }
+};
 const formatPercent = (value) => (Number.isFinite(value) ? `${value >= 0 ? "+" : ""}${value.toFixed(2)}%` : "—");
 const formatNumber = (value, digits = 1) => (Number.isFinite(value) ? value.toFixed(digits) : "—");
 const escaped = (value) => String(value).replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[character]);
@@ -46,7 +56,7 @@ function signalCard(entry, index) {
       <p>${escaped(signal.explanation)}</p>
       ${entry.sinceVisitPercent !== null ? `<small>Since last visit: <b>${formatPercent(entry.sinceVisitPercent)}</b></small>` : `<small>First check-in: baseline saved now.</small>`}
     </div>
-    <div class="signal-price"><b>${formatPrice(entry.price)}</b><span class="${direction}">${formatPercent(signal.changePercent)}</span></div>
+    <div class="signal-price"><b>${formatPrice(entry.price, entry.currency)}</b><span class="${direction}">${formatPercent(signal.changePercent)}</span></div>
     <div class="score"><b>${formatNumber(signal.score)}</b><span>signal score</span></div>
   </article>`;
 }
@@ -59,7 +69,7 @@ function stockRow(entry) {
   const volume = entry.signal.volumeRatio ? `${formatNumber(entry.signal.volumeRatio)}x avg` : "No volume";
   return `<tr>
     <td><strong>${escaped(entry.ticker)}</strong><span>${escaped(entry.name)}</span></td>
-    <td class="number">${formatPrice(entry.price)}</td>
+    <td class="number">${formatPrice(entry.price, entry.currency)}</td>
     <td class="number ${direction}">${formatPercent(entry.signal.changePercent)}</td>
     <td>${volume}</td><td>${health(entry)}</td>
     <td><button class="remove" data-ticker="${escaped(entry.ticker)}" aria-label="Remove ${escaped(entry.ticker)}">×</button></td>
@@ -100,7 +110,7 @@ async function load(markSeen = false) {
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const ticker = input.value.trim();
+  const ticker = selectedTicker || input.value.trim();
   if (!ticker) return;
   const button = form.querySelector("button");
   button.disabled = true;
@@ -111,6 +121,7 @@ form.addEventListener("submit", async (event) => {
       body: JSON.stringify({ ticker }),
     });
     input.value = "";
+    selectedTicker = "";
     notice(`${ticker.toUpperCase()} added to your watchlist.`);
     await load(false);
   } catch (error) {
@@ -118,6 +129,77 @@ form.addEventListener("submit", async (event) => {
   } finally {
     button.disabled = false;
   }
+});
+
+function closeSuggestions() {
+  suggestions.hidden = true;
+  suggestions.replaceChildren();
+  suggestionResults = [];
+  activeSuggestion = -1;
+}
+
+function chooseSuggestion(index) {
+  const result = suggestionResults[index];
+  if (!result) return;
+  selectedTicker = result.symbol;
+  input.value = result.name;
+  closeSuggestions();
+}
+
+function renderSuggestions(results) {
+  suggestionResults = results;
+  activeSuggestion = -1;
+  suggestions.replaceChildren();
+  results.forEach((result, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "suggestion";
+    button.setAttribute("role", "option");
+    button.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      chooseSuggestion(index);
+    });
+    const name = document.createElement("strong");
+    name.textContent = result.name;
+    const detail = document.createElement("span");
+    detail.textContent = `${result.symbol}${result.exchange ? ` · ${result.exchange}` : ""}`;
+    button.append(name, detail);
+    suggestions.append(button);
+  });
+  suggestions.hidden = results.length === 0;
+}
+
+input.addEventListener("input", () => {
+  selectedTicker = "";
+  clearTimeout(searchTimer);
+  const query = input.value.trim();
+  if (query.length < 2) return closeSuggestions();
+  searchTimer = setTimeout(async () => {
+    try {
+      const body = await request(`/api/search?q=${encodeURIComponent(query)}`);
+      if (input.value.trim() === query && !selectedTicker) renderSuggestions(body.results);
+    } catch {
+      closeSuggestions();
+    }
+  }, 250);
+});
+
+input.addEventListener("keydown", (event) => {
+  if (suggestions.hidden || !suggestionResults.length) return;
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    activeSuggestion = (activeSuggestion + (event.key === "ArrowDown" ? 1 : -1) + suggestionResults.length) % suggestionResults.length;
+    [...suggestions.children].forEach((node, index) => node.classList.toggle("active", index === activeSuggestion));
+  } else if (event.key === "Enter" && activeSuggestion >= 0) {
+    event.preventDefault();
+    chooseSuggestion(activeSuggestion);
+  } else if (event.key === "Escape") {
+    closeSuggestions();
+  }
+});
+
+document.addEventListener("click", (event) => {
+  if (!form.contains(event.target)) closeSuggestions();
 });
 
 watchlist.addEventListener("click", async (event) => {
