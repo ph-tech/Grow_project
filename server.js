@@ -5,6 +5,7 @@ import { extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import YahooFinance from "yahoo-finance2";
 import { calculateSignal, explainSignal } from "./lib/scoring.js";
+import { freshnessStatus } from "./lib/market-hours.js";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = join(root, "public");
@@ -288,11 +289,8 @@ async function fetchStooq(ticker) {
   }
 }
 
-function freshness(providerAt) {
-  const quotedAt = new Date(providerAt).getTime();
-  if (!Number.isFinite(quotedAt)) return { ageMinutes: null, stale: true, label: "Quote time unavailable" };
-  const ageMinutes = Math.max(0, Math.round((Date.now() - quotedAt) / 60_000));
-  return { ageMinutes, stale: ageMinutes > 20, label: ageMinutes <= 1 ? "Just updated" : `${ageMinutes}m old` };
+function freshness(providerAt, market = {}) {
+  return freshnessStatus(providerAt, market);
 }
 
 function applySecondaryQuote(ticker, fetchedAt, primaryPrice, result) {
@@ -316,7 +314,7 @@ async function fetchAndCacheMarketData(ticker, cached) {
       secondary: null,
       secondaryError: null,
       sourceConflict: false,
-      freshness: freshness(primary.providerAt),
+      freshness: freshness(primary.providerAt, primary),
     };
     database.cache[ticker] = data;
     await persist();
@@ -326,7 +324,7 @@ async function fetchAndCacheMarketData(ticker, cached) {
     return data;
   } catch (error) {
     if (cached) {
-      return { ...cached, fetchError: error.message, freshness: { ...freshness(cached.providerAt), stale: true } };
+      return { ...cached, fetchError: error.message, freshness: { ...freshness(cached.providerAt, cached), stale: true } };
     }
     throw error;
   }
@@ -390,7 +388,7 @@ async function watchlistPayload(user, markSeen = false) {
           addedAt: item.addedAt,
           signal: { ...signal, explanation: explainSignal(signal) },
           sinceVisitPercent,
-          status: market.fetchError ? "stale" : market.freshness.stale ? "delayed" : "live",
+          status: market.fetchError ? "stale" : market.freshness.stale ? "delayed" : market.freshness.marketClosed ? "closed" : "live",
         };
       } catch (error) {
         return {
