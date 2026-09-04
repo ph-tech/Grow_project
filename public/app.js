@@ -5,11 +5,23 @@ const input = document.querySelector("#ticker");
 const toast = document.querySelector("#toast");
 const marketStatus = document.querySelector("#market-status");
 const emptyTemplate = document.querySelector("#empty-state");
+const suggestions = document.querySelector("#suggestions");
+let selectedTicker = "";
+let suggestionResults = [];
+let activeSuggestion = -1;
+let searchTimer;
 
-const formatPrice = (value) =>
-  Number.isFinite(value)
-    ? new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 2 }).format(value)
-    : "—";
+import { displayTicker, displayTickerMessage } from "./ticker-utils.js";
+
+const formatPrice = (value, currency) => {
+  if (!Number.isFinite(value)) return "—";
+  if (!currency) return value.toFixed(2);
+  try {
+    return new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 2 }).format(value);
+  } catch {
+    return value.toFixed(2);
+  }
+};
 const formatPercent = (value) => (Number.isFinite(value) ? `${value >= 0 ? "+" : ""}${value.toFixed(2)}%` : "—");
 const formatNumber = (value, digits = 1) => (Number.isFinite(value) ? value.toFixed(digits) : "—");
 const escaped = (value) => String(value).replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[character]);
@@ -24,7 +36,7 @@ function notice(message, isError = false) {
 async function request(url, options) {
   const response = await fetch(url, options);
   const body = await response.json();
-  if (!response.ok) throw new Error(body.error || "Something went wrong.");
+  if (!response.ok) throw new Error(displayTickerMessage(body.error || "Something went wrong."));
   return body;
 }
 
@@ -33,36 +45,39 @@ function health(entry) {
   if (entry.sourceConflict) return `<span class="health conflict">Source conflict</span>`;
   if (entry.secondaryError) return `<span class="health delayed">Cross-check unavailable</span>`;
   if (entry.status === "stale" || entry.status === "delayed") return `<span class="health delayed">${escaped(entry.freshness?.label || "Data delayed")}</span>`;
+  if (entry.status === "closed") return `<span class="health closed">${escaped(entry.freshness?.label || "Market closed")}</span>`;
   return `<span class="health live">${escaped(entry.freshness.label)}</span>`;
 }
 
 function signalCard(entry, index) {
   const signal = entry.signal;
   const direction = signal.changePercent >= 0 ? "up" : "down";
+  const ticker = displayTicker(entry.ticker);
   return `<article class="signal-card ${direction}">
     <div class="rank">0${index + 1}</div>
     <div class="signal-main">
-      <div class="ticker-row"><strong>${escaped(entry.ticker)}</strong><span>${escaped(entry.name)}</span></div>
+      <div class="ticker-row"><strong>${escaped(ticker)}</strong><span>${escaped(entry.name)}</span></div>
       <p>${escaped(signal.explanation)}</p>
-      ${entry.sinceVisitPercent !== null ? `<small>Since last visit: <b>${formatPercent(entry.sinceVisitPercent)}</b></small>` : `<small>First check-in: baseline saved now.</small>`}
+      ${entry.sinceVisitPercent !== null ? `<small class="since-visit ${entry.sinceVisitPercent >= 0 ? "up" : "down"}">Since last visit: <b>${formatPercent(entry.sinceVisitPercent)}</b></small>` : `<small>First check-in: baseline saved now.</small>`}
     </div>
-    <div class="signal-price"><b>${formatPrice(entry.price)}</b><span class="${direction}">${formatPercent(signal.changePercent)}</span></div>
+    <div class="signal-price"><b>${formatPrice(entry.price, entry.currency)}</b><span class="${direction}">${formatPercent(signal.changePercent)}</span></div>
     <div class="score"><b>${formatNumber(signal.score)}</b><span>signal score</span></div>
   </article>`;
 }
 
 function stockRow(entry) {
+  const ticker = displayTicker(entry.ticker);
   if (entry.status === "unavailable") {
-    return `<tr><td><strong>${escaped(entry.ticker)}</strong></td><td colspan="4" class="unavailable-message">${escaped(entry.error)}</td><td><button class="remove" data-ticker="${escaped(entry.ticker)}">Remove</button></td></tr>`;
+    return `<tr><td><strong>${escaped(ticker)}</strong></td><td colspan="4" class="unavailable-message">${escaped(entry.error)}</td><td><button class="remove" data-ticker="${escaped(entry.ticker)}">Remove</button></td></tr>`;
   }
   const direction = entry.signal.changePercent >= 0 ? "up" : "down";
   const volume = entry.signal.volumeRatio ? `${formatNumber(entry.signal.volumeRatio)}x avg` : "No volume";
   return `<tr>
-    <td><strong>${escaped(entry.ticker)}</strong><span>${escaped(entry.name)}</span></td>
-    <td class="number">${formatPrice(entry.price)}</td>
+    <td><strong>${escaped(ticker)}</strong><span>${escaped(entry.name)}</span></td>
+    <td class="number">${formatPrice(entry.price, entry.currency)}</td>
     <td class="number ${direction}">${formatPercent(entry.signal.changePercent)}</td>
     <td>${volume}</td><td>${health(entry)}</td>
-    <td><button class="remove" data-ticker="${escaped(entry.ticker)}" aria-label="Remove ${escaped(entry.ticker)}">×</button></td>
+    <td><button class="remove" data-ticker="${escaped(entry.ticker)}" aria-label="Remove ${escaped(ticker)}">×</button></td>
   </tr>`;
 }
 
@@ -82,7 +97,7 @@ function render(data) {
       : `<div class="calm"><b>No unusual moves right now.</b><span>Your stocks moved within their normal range, or volume did not confirm the move.</span></div>`;
     watchlist.innerHTML = entries.map(stockRow).join("");
   }
-  const hasConcern = entries.some((entry) => entry.status !== "live" || entry.sourceConflict);
+  const hasConcern = entries.some((entry) => (entry.status !== "live" && entry.status !== "closed") || entry.sourceConflict);
   marketStatus.textContent = hasConcern ? "Some data needs attention" : "Market data healthy";
   marketStatus.classList.toggle("attention", hasConcern);
 }
@@ -100,7 +115,7 @@ async function load(markSeen = false) {
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const ticker = input.value.trim();
+  const ticker = selectedTicker || input.value.trim();
   if (!ticker) return;
   const button = form.querySelector("button");
   button.disabled = true;
@@ -111,7 +126,8 @@ form.addEventListener("submit", async (event) => {
       body: JSON.stringify({ ticker }),
     });
     input.value = "";
-    notice(`${ticker.toUpperCase()} added to your watchlist.`);
+    selectedTicker = "";
+    notice(`${displayTicker(ticker)} added to your watchlist.`);
     await load(false);
   } catch (error) {
     notice(error.message, true);
@@ -120,12 +136,83 @@ form.addEventListener("submit", async (event) => {
   }
 });
 
+function closeSuggestions() {
+  suggestions.hidden = true;
+  suggestions.replaceChildren();
+  suggestionResults = [];
+  activeSuggestion = -1;
+}
+
+function chooseSuggestion(index) {
+  const result = suggestionResults[index];
+  if (!result) return;
+  selectedTicker = result.symbol;
+  input.value = result.name;
+  closeSuggestions();
+}
+
+function renderSuggestions(results) {
+  suggestionResults = results;
+  activeSuggestion = -1;
+  suggestions.replaceChildren();
+  results.forEach((result, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "suggestion";
+    button.setAttribute("role", "option");
+    button.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      chooseSuggestion(index);
+    });
+    const name = document.createElement("strong");
+    name.textContent = result.name;
+    const detail = document.createElement("span");
+    detail.textContent = `${displayTicker(result.symbol)}${result.exchange ? ` · ${result.exchange}` : ""}`;
+    button.append(name, detail);
+    suggestions.append(button);
+  });
+  suggestions.hidden = results.length === 0;
+}
+
+input.addEventListener("input", () => {
+  selectedTicker = "";
+  clearTimeout(searchTimer);
+  const query = input.value.trim();
+  if (query.length < 2) return closeSuggestions();
+  searchTimer = setTimeout(async () => {
+    try {
+      const body = await request(`/api/search?q=${encodeURIComponent(query)}`);
+      if (input.value.trim() === query && !selectedTicker) renderSuggestions(body.results);
+    } catch {
+      closeSuggestions();
+    }
+  }, 250);
+});
+
+input.addEventListener("keydown", (event) => {
+  if (suggestions.hidden || !suggestionResults.length) return;
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    activeSuggestion = (activeSuggestion + (event.key === "ArrowDown" ? 1 : -1) + suggestionResults.length) % suggestionResults.length;
+    [...suggestions.children].forEach((node, index) => node.classList.toggle("active", index === activeSuggestion));
+  } else if (event.key === "Enter" && activeSuggestion >= 0) {
+    event.preventDefault();
+    chooseSuggestion(activeSuggestion);
+  } else if (event.key === "Escape") {
+    closeSuggestions();
+  }
+});
+
+document.addEventListener("click", (event) => {
+  if (!form.contains(event.target)) closeSuggestions();
+});
+
 watchlist.addEventListener("click", async (event) => {
   const button = event.target.closest(".remove");
   if (!button) return;
   try {
     await request(`/api/watchlist/${encodeURIComponent(button.dataset.ticker)}`, { method: "DELETE" });
-    notice(`${button.dataset.ticker} removed.`);
+    notice(`${displayTicker(button.dataset.ticker)} removed.`);
     await load(false);
   } catch (error) {
     notice(error.message, true);

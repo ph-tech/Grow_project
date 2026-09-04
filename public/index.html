@@ -25,10 +25,11 @@
         <form class="add-stock" id="add-stock">
           <label for="ticker">Add to watchlist</label>
           <div>
-            <input id="ticker" name="ticker" autocomplete="off" placeholder="RELIANCE.NS" maxlength="15" required />
+            <input id="ticker" name="ticker" autocomplete="off" placeholder="Search company or ticker" maxlength="80" required aria-controls="suggestions" />
             <button type="submit">Add stock <span>↗</span></button>
           </div>
-          <p>Try RELIANCE.NS, TCS.NS, INFY.NS, HDFCBANK.NS</p>
+          <div id="suggestions" class="suggestions" role="listbox" hidden></div>
+          <p>Try TCS, Reliance, Infosys, HDFC Bank, Apple, or MSFT</p>
         </form>
       </section>
 
