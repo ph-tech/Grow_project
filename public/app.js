@@ -7,8 +7,11 @@ const marketStatus = document.querySelector("#market-status");
 const emptyTemplate = document.querySelector("#empty-state");
 
 const formatPrice = (value) =>
-  new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 2 }).format(value);
-const formatPercent = (value) => `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
+  Number.isFinite(value)
+    ? new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 2 }).format(value)
+    : "—";
+const formatPercent = (value) => (Number.isFinite(value) ? `${value >= 0 ? "+" : ""}${value.toFixed(2)}%` : "—");
+const formatNumber = (value, digits = 1) => (Number.isFinite(value) ? value.toFixed(digits) : "—");
 const escaped = (value) => String(value).replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[character]);
 
 function notice(message, isError = false) {
@@ -28,7 +31,8 @@ async function request(url, options) {
 function health(entry) {
   if (entry.status === "unavailable") return `<span class="health unavailable">Unavailable</span>`;
   if (entry.sourceConflict) return `<span class="health conflict">Source conflict</span>`;
-  if (entry.status === "stale" || entry.status === "delayed") return `<span class="health delayed">${escaped(entry.freshness.label)}</span>`;
+  if (entry.secondaryError) return `<span class="health delayed">Cross-check unavailable</span>`;
+  if (entry.status === "stale" || entry.status === "delayed") return `<span class="health delayed">${escaped(entry.freshness?.label || "Data delayed")}</span>`;
   return `<span class="health live">${escaped(entry.freshness.label)}</span>`;
 }
 
@@ -43,7 +47,7 @@ function signalCard(entry, index) {
       ${entry.sinceVisitPercent !== null ? `<small>Since last visit: <b>${formatPercent(entry.sinceVisitPercent)}</b></small>` : `<small>First check-in: baseline saved now.</small>`}
     </div>
     <div class="signal-price"><b>${formatPrice(entry.price)}</b><span class="${direction}">${formatPercent(signal.changePercent)}</span></div>
-    <div class="score"><b>${signal.score.toFixed(1)}</b><span>signal score</span></div>
+    <div class="score"><b>${formatNumber(signal.score)}</b><span>signal score</span></div>
   </article>`;
 }
 
@@ -52,7 +56,7 @@ function stockRow(entry) {
     return `<tr><td><strong>${escaped(entry.ticker)}</strong></td><td colspan="4" class="unavailable-message">${escaped(entry.error)}</td><td><button class="remove" data-ticker="${escaped(entry.ticker)}">Remove</button></td></tr>`;
   }
   const direction = entry.signal.changePercent >= 0 ? "up" : "down";
-  const volume = entry.signal.volumeRatio ? `${entry.signal.volumeRatio.toFixed(1)}x avg` : "No volume";
+  const volume = entry.signal.volumeRatio ? `${formatNumber(entry.signal.volumeRatio)}x avg` : "No volume";
   return `<tr>
     <td><strong>${escaped(entry.ticker)}</strong><span>${escaped(entry.name)}</span></td>
     <td class="number">${formatPrice(entry.price)}</td>
