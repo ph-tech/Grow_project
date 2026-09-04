@@ -11,6 +11,8 @@ let suggestionResults = [];
 let activeSuggestion = -1;
 let searchTimer;
 
+import { displayTicker, displayTickerMessage } from "./ticker-utils.js";
+
 const formatPrice = (value, currency) => {
   if (!Number.isFinite(value)) return "—";
   if (!currency) return value.toFixed(2);
@@ -34,7 +36,7 @@ function notice(message, isError = false) {
 async function request(url, options) {
   const response = await fetch(url, options);
   const body = await response.json();
-  if (!response.ok) throw new Error(body.error || "Something went wrong.");
+  if (!response.ok) throw new Error(displayTickerMessage(body.error || "Something went wrong."));
   return body;
 }
 
@@ -49,10 +51,11 @@ function health(entry) {
 function signalCard(entry, index) {
   const signal = entry.signal;
   const direction = signal.changePercent >= 0 ? "up" : "down";
+  const ticker = displayTicker(entry.ticker);
   return `<article class="signal-card ${direction}">
     <div class="rank">0${index + 1}</div>
     <div class="signal-main">
-      <div class="ticker-row"><strong>${escaped(entry.ticker)}</strong><span>${escaped(entry.name)}</span></div>
+      <div class="ticker-row"><strong>${escaped(ticker)}</strong><span>${escaped(entry.name)}</span></div>
       <p>${escaped(signal.explanation)}</p>
       ${entry.sinceVisitPercent !== null ? `<small>Since last visit: <b>${formatPercent(entry.sinceVisitPercent)}</b></small>` : `<small>First check-in: baseline saved now.</small>`}
     </div>
@@ -62,17 +65,18 @@ function signalCard(entry, index) {
 }
 
 function stockRow(entry) {
+  const ticker = displayTicker(entry.ticker);
   if (entry.status === "unavailable") {
-    return `<tr><td><strong>${escaped(entry.ticker)}</strong></td><td colspan="4" class="unavailable-message">${escaped(entry.error)}</td><td><button class="remove" data-ticker="${escaped(entry.ticker)}">Remove</button></td></tr>`;
+    return `<tr><td><strong>${escaped(ticker)}</strong></td><td colspan="4" class="unavailable-message">${escaped(entry.error)}</td><td><button class="remove" data-ticker="${escaped(entry.ticker)}">Remove</button></td></tr>`;
   }
   const direction = entry.signal.changePercent >= 0 ? "up" : "down";
   const volume = entry.signal.volumeRatio ? `${formatNumber(entry.signal.volumeRatio)}x avg` : "No volume";
   return `<tr>
-    <td><strong>${escaped(entry.ticker)}</strong><span>${escaped(entry.name)}</span></td>
+    <td><strong>${escaped(ticker)}</strong><span>${escaped(entry.name)}</span></td>
     <td class="number">${formatPrice(entry.price, entry.currency)}</td>
     <td class="number ${direction}">${formatPercent(entry.signal.changePercent)}</td>
     <td>${volume}</td><td>${health(entry)}</td>
-    <td><button class="remove" data-ticker="${escaped(entry.ticker)}" aria-label="Remove ${escaped(entry.ticker)}">×</button></td>
+    <td><button class="remove" data-ticker="${escaped(entry.ticker)}" aria-label="Remove ${escaped(ticker)}">×</button></td>
   </tr>`;
 }
 
@@ -122,7 +126,7 @@ form.addEventListener("submit", async (event) => {
     });
     input.value = "";
     selectedTicker = "";
-    notice(`${ticker.toUpperCase()} added to your watchlist.`);
+    notice(`${displayTicker(ticker)} added to your watchlist.`);
     await load(false);
   } catch (error) {
     notice(error.message, true);
@@ -162,7 +166,7 @@ function renderSuggestions(results) {
     const name = document.createElement("strong");
     name.textContent = result.name;
     const detail = document.createElement("span");
-    detail.textContent = `${result.symbol}${result.exchange ? ` · ${result.exchange}` : ""}`;
+    detail.textContent = `${displayTicker(result.symbol)}${result.exchange ? ` · ${result.exchange}` : ""}`;
     button.append(name, detail);
     suggestions.append(button);
   });
@@ -207,7 +211,7 @@ watchlist.addEventListener("click", async (event) => {
   if (!button) return;
   try {
     await request(`/api/watchlist/${encodeURIComponent(button.dataset.ticker)}`, { method: "DELETE" });
-    notice(`${button.dataset.ticker} removed.`);
+    notice(`${displayTicker(button.dataset.ticker)} removed.`);
     await load(false);
   } catch (error) {
     notice(error.message, true);
