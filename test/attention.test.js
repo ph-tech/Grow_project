@@ -51,3 +51,13 @@ test("first baseline and newly-added tickers do not create fake transitions", ()
   const previous = { "INFY.NS": { signalMeaningful: false, peerMeaningful: false } };
   assert.deepEqual(attentionTransitions(previous, current, entries).becameUnusual, []);
 });
+
+test("a largest move alone is not an attention-state transition", () => {
+  const previous = { "TCS.NS": { signalMeaningful: false, peerMeaningful: false } };
+  const entries = [entry("TCS.NS", { since: 4.2 })];
+  const transitions = attentionTransitions(previous, attentionStateForEntries(entries), entries);
+  assert.deepEqual(transitions.becameUnusual, []);
+  assert.deepEqual(transitions.returnedToNormal, []);
+  assert.deepEqual(transitions.newPeerDivergence, []);
+  assert.deepEqual(transitions.largestMove, { ticker: "TCS.NS", percent: 4.2 });
+});
