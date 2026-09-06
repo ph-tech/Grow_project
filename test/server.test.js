@@ -250,3 +250,63 @@ test("coalesces market requests, serializes concurrent mutations, and returns st
   assert.equal(unavailable.response.status, 502);
   assert.match(unavailable.body.error, /Market provider returned 404/);
 });
+
+test("watchlist reads do not advance attention baseline but changes reads do", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "signal-watch-attention-baseline-"));
+  const provider = await startMockProvider();
+  const app = await startApp(directory, provider.url);
+  t.after(async () => {
+    await app.stop();
+    await provider.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const first = await api(app.baseUrl, "/api/watchlist");
+  const cookie = first.response.headers.get("set-cookie").split(";")[0];
+  const userId = cookie.split("=")[1];
+  let persisted = JSON.parse(await readFile(join(directory, "watchlist.json"), "utf8"));
+  assert.deepEqual(persisted.users[userId].attentionState || {}, {});
+
+  await api(app.baseUrl, "/api/watchlist", { headers: { cookie } });
+  persisted = JSON.parse(await readFile(join(directory, "watchlist.json"), "utf8"));
+  assert.deepEqual(persisted.users[userId].attentionState || {}, {});
+
+  await api(app.baseUrl, "/api/watchlist", {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ ticker: "TCS" }),
+  });
+  await api(app.baseUrl, "/api/changes", { headers: { cookie } });
+  persisted = JSON.parse(await readFile(join(directory, "watchlist.json"), "utf8"));
+  assert.equal(persisted.users[userId].attentionState["TCS.NS"].signalMeaningful, true);
+});
+
+test("authentication failures are rate limited without exposing account existence", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "signal-watch-auth-limit-"));
+  const provider = await startMockProvider();
+  const app = await startApp(directory, provider.url);
+  t.after(async () => {
+    await app.stop();
+    await provider.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const session = await api(app.baseUrl, "/api/changes");
+  const cookie = session.response.headers.get("set-cookie").split(";")[0];
+  const headers = { cookie, "content-type": "application/json", "x-forwarded-for": "203.0.113.45" };
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const failed = await api(app.baseUrl, "/api/auth/login", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ email: "nobody@example.com", password: "definitely-wrong-password" }),
+    });
+    assert.equal(failed.response.status, 401);
+  }
+  const limited = await api(app.baseUrl, "/api/auth/login", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ email: "nobody@example.com", password: "definitely-wrong-password" }),
+  });
+  assert.equal(limited.response.status, 429);
+  assert.match(limited.body.error, /too many authentication attempts/i);
+});

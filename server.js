@@ -8,6 +8,7 @@ import YahooFinance from "yahoo-finance2";
 import { calculateSignal, explainSignal } from "./lib/scoring.js";
 import { freshnessStatus, isIndianMarketOpen } from "./lib/market-hours.js";
 import { applyPeerDivergence } from "./lib/peers.js";
+import { attentionStateForEntries, attentionTransitions, shouldShowInDigest } from "./lib/attention.js";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = join(root, "public");
@@ -21,12 +22,15 @@ const YAHOO_CHART_URL = process.env.YAHOO_CHART_URL || "https://query1.finance.y
 const STOOQ_QUOTE_URL = process.env.STOOQ_QUOTE_URL || "https://stooq.com/q/l/";
 const MAX_WATCHLIST_SIZE = 40;
 const PASSWORD_MIN_LENGTH = 10;
+const AUTH_MAX_FAILURES = 5;
+const AUTH_WINDOW_MS = 10 * 60_000;
 const scryptAsync = promisify(scrypt);
 let writeChain = Promise.resolve();
 let database = { users: {}, accounts: {}, watchlists: {}, snapshots: {}, cache: {} };
 const inFlightMarketRequests = new Map();
 const userLocks = new Map();
 const searchCache = new Map();
+const authFailures = new Map();
 const yahooFinance = new YahooFinance();
 const knownSymbols = new Map([
   ["TCS", "TCS.NS"], ["RELIANCE", "RELIANCE.NS"], ["RELIANCE INDUSTRIES", "RELIANCE.NS"],
@@ -144,6 +148,7 @@ async function currentUser(request, response) {
       createdAt: timestamp(),
       lastSeenAt: null,
       preferences: { alertLevel: "high" },
+      attentionState: {},
       isAccount: false,
     };
     await persist();
@@ -185,6 +190,37 @@ async function passwordMatches(password, account) {
   return candidate.length === stored.length && timingSafeEqual(candidate, stored);
 }
 
+function clientAddress(request) {
+  const forwarded = String(request.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  return forwarded || String(request.headers["x-real-ip"] || request.socket?.remoteAddress || "unknown");
+}
+
+function authLimitKeys(request, email) {
+  return [`ip:${clientAddress(request)}`, `email:${email}`];
+}
+
+function activeFailures(key, now = Date.now()) {
+  const recent = (authFailures.get(key) || []).filter((at) => now - at < AUTH_WINDOW_MS);
+  if (recent.length) authFailures.set(key, recent);
+  else authFailures.delete(key);
+  return recent;
+}
+
+function assertAuthAllowed(keys) {
+  if (keys.some((key) => activeFailures(key).length >= AUTH_MAX_FAILURES)) {
+    throw new HttpError(429, "Too many authentication attempts. Please try again later.");
+  }
+}
+
+function recordAuthFailure(keys) {
+  const now = Date.now();
+  for (const key of keys) authFailures.set(key, [...activeFailures(key, now), now]);
+}
+
+function clearAuthFailures(keys) {
+  for (const key of keys) authFailures.delete(key);
+}
+
 function mergeUserData(fromId, toId) {
   const existing = database.watchlists[toId] || [];
   const additions = (database.watchlists[fromId] || []).filter((item) => !existing.some((saved) => saved.ticker === item.ticker));
@@ -193,6 +229,8 @@ function mergeUserData(fromId, toId) {
   if (previousVisit && (!database.users[toId].lastSeenAt || previousVisit > database.users[toId].lastSeenAt)) {
     database.users[toId].lastSeenAt = previousVisit;
   }
+  const sourceAttention = database.users[fromId]?.attentionState || {};
+  database.users[toId].attentionState = { ...sourceAttention, ...(database.users[toId].attentionState || {}) };
   delete database.watchlists[fromId];
 }
 
@@ -490,18 +528,39 @@ async function watchlistPayload(user, markSeen = false) {
       }
     }),
   );
-  const enriched = applyPeerDivergence(entries).map((entry) => ({
+  const alertLevel = preferencesFor(user).alertLevel;
+  const enriched = applyPeerDivergence(entries).map((entry) => {
+    const attentionScore = (entry.signal?.score || -1) + (entry.peer?.meaningful ? entry.peer.score * 0.45 : 0);
+    return {
+      ...entry,
+      attentionScore,
+      priority: attentionScore, // Backward-compatible field for older clients.
+      digestVisible: shouldShowInDigest(entry, alertLevel),
+    };
+  });
+  enriched.sort((a, b) => b.attentionScore - a.attentionScore);
+
+  const previousAttentionState = user.attentionState && typeof user.attentionState === "object"
+    ? user.attentionState
+    : null;
+  const currentAttentionState = attentionStateForEntries(enriched);
+  const transitions = attentionTransitions(previousAttentionState, currentAttentionState, enriched);
+  const outputEntries = enriched.map((entry) => ({
     ...entry,
-    priority: (entry.signal?.score || -1) + (entry.peer?.meaningful ? entry.peer.score * 0.45 : 0),
+    transition: transitions.byTicker[entry.ticker] || null,
   }));
-  enriched.sort((a, b) => b.priority - a.priority);
-  if (markSeen) user.lastSeenAt = timestamp();
+
+  if (markSeen) {
+    user.lastSeenAt = timestamp();
+    user.attentionState = currentAttentionState;
+  }
   await persist();
   return {
-    entries: enriched,
+    entries: outputEntries,
     lastSeenAt: previousVisit,
     market: marketStatus(),
     preferences: preferencesFor(user),
+    transitions,
   };
 }
 
@@ -517,7 +576,12 @@ async function api(request, response, user, path) {
     const body = await readJson(request);
     const email = normalizeEmail(body.email);
     const password = validatePassword(body.password);
-    if (database.accounts[email]) throw new HttpError(409, "An account already exists for this email.");
+    const limitKeys = authLimitKeys(request, email);
+    assertAuthAllowed(limitKeys);
+    if (database.accounts[email]) {
+      recordAuthFailure(limitKeys);
+      throw new HttpError(409, "Unable to create an account with those details.");
+    }
     const accountId = randomUUID();
     const credentials = await passwordRecord(password);
     database.users[accountId] = {
@@ -527,6 +591,7 @@ async function api(request, response, user, path) {
       createdAt: timestamp(),
       lastSeenAt: user.lastSeenAt,
       preferences: preferencesFor(user),
+      attentionState: { ...(user.attentionState || {}) },
     };
     database.accounts[email] = { userId: accountId, passwordSalt: credentials.salt, passwordHash: credentials.hash };
     await withUserLock(user.id, async () => {
@@ -537,16 +602,21 @@ async function api(request, response, user, path) {
       sessionCookie("signal_account", accountId, request),
       sessionCookie("signal_user", "", request, 0),
     ]);
+    clearAuthFailures(limitKeys);
     return send(response, 201, { ok: true, email });
   }
   if (request.method === "POST" && path === "/api/auth/login") {
     const body = await readJson(request);
     const email = normalizeEmail(body.email);
     const password = validatePassword(body.password);
+    const limitKeys = authLimitKeys(request, email);
+    assertAuthAllowed(limitKeys);
     const account = database.accounts[email];
     if (!account || !(await passwordMatches(password, account))) {
+      recordAuthFailure(limitKeys);
       throw new HttpError(401, "Email or password is incorrect.");
     }
+    clearAuthFailures(limitKeys);
     await withUserLock(user.id, async () => {
       if (!user.isAccount && user.id !== account.userId) mergeUserData(user.id, account.userId);
       await persist();

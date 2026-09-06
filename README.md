@@ -47,13 +47,16 @@ Postgres (users, watchlist_items, market_snapshots)
   + bounded background worker queue (scheduled refreshes instead of per-request fetches)
 ```
 
-For Railway, mount a persistent volume at `/data` and set `DATA_DIR=/data`.
-
 ## Engineering decisions
 
 ### Beyond the basic watchlist
 
-Signal Watch includes four focused product surfaces beyond the dashboard. **Peer divergence** compares a stock with two or more watched sector peers and flags an unusual outperformer or underperformer; the first groups cover IT services, private banks, auto, and energy. **Stock detail** exposes the 30-session range, usual swing, volume baseline, and recorded signals. **Signal history** is a dated record of meaningful daily moves. **Settings** offers a persisted high-confidence/all/off signal-digest filter and explains the current NSE session status. A password-protected account can merge the device watchlist into a server account and restore it on another device.
+Signal Watch includes focused product surfaces beyond the dashboard. **Peer divergence** compares a stock with two or more watched sector peers and flags an unusual outperformer or underperformer; the first groups cover IT services, private banks, auto, and energy. **Attention transitions** remember each user's previous signal/peer state and surface what became unusual, returned to normal, or newly diverged since the last marked visit. **Stock detail** exposes the 30-session range, usual swing, volume baseline, and recorded signals. **Signal history** is a dated record of meaningful daily moves. **Settings** persists a signal-digest filter: `all` shows every meaningful signal, `off` hides digest cards without stopping tracking, and `high` keeps only entries whose existing core-signal score or peer-divergence score is at least **1.5**. A password-protected account can merge the anonymous device watchlist into a server account and restore it on another device.
+
+
+## What makes Signal Watch different
+
+Signal Watch applies three layers of attention. **Personal abnormality:** instead of asking which stock moved the most, it asks which stock moved unusually relative to its own recent behavior. **Peer context:** for supported watched groups, it then asks whether that stock is diverging from similar companies. **Attention transitions:** on the next marked visit, it highlights which items became unusual, returned to normal, or developed a new peer divergence. The result is a watchlist organized around changes in attention state, not a generic table of quotes.
 
 ### Meaningful change
 
@@ -87,14 +90,15 @@ I chose a self-contained email/password account over a third-party OAuth integra
 
 - **Relative volatility instead of raw percentage change** — a 1% move in a normally-quiet stock is more informative than a 4% move in a stock that swings that much most days. Comparing each move against the stock's own recent standard deviation surfaces genuinely unusual behavior instead of just ranking the biggest raw movers.
 - **Volume as confirmation, not a standalone trigger** — a large relative price move without participation is often noise (thin trading, a single print). Requiring average-volume confirmation (or allowing a lower price threshold when volume is very high) reduces false positives while still catching high-conviction moves.
-- **Anonymous device identity instead of authentication** — a device-scoped, HTTP-only session cookie gives the "since you last visited" comparison and persistent watchlist without building sign-up, password/OAuth flows, or account recovery in a 72-hour window. It is intentionally the smallest mechanism that satisfies the core challenge requirement.
+- **Anonymous first, optional account sync** — every visitor starts with a device-scoped, HTTP-only session cookie, so the core watchlist and "since you last visited" flow has zero signup friction. Users who want cross-device restoration can opt into the built-in email/password account; passwords are stored as salted Node `scrypt` hashes. The challenge build intentionally omits password reset, email verification, and OAuth.
 - **File-backed persistence instead of Postgres for this 72-hour build** — a single atomically-written JSON file removes all setup friction (no database provisioning, migrations, or connection pooling) while still giving real cross-visit durability on a mounted Railway volume. The data shape is already table-shaped (`users`, `watchlist_items`, `market_snapshots`, `market_cache`), so moving to Postgres later is a storage-layer swap, not a redesign.
 - **No WebSockets** — the watchlist is refreshed on page load/visit, not streamed tick-by-tick. Polling on demand with server-side caching is simpler, cheaper against upstream rate limits, and matches how someone actually checks a watchlist (open the tab, glance, close it) rather than a trading terminal use case.
 - **Yahoo + Stooq instead of introducing more providers** — Yahoo's chart endpoint gives price, history, currency, and exchange metadata in one call, which is what scoring and display need. Stooq adds a free, independent second opinion for plain U.S. tickers to catch provider drift. Adding more providers would add rate-limit surface and reconciliation complexity without changing what the core signal needs.
+- **Attention score vs. core signal score** — the core signal score remains the volatility/volume calculation. When peer divergence is meaningful, it contributes a deliberately limited `0.45 × peer score` secondary boost to the displayed **attention score**, which is used only for ordering the feed.
 
 ### Cross-device trade-off
 
-Same-browser/device revisits persist automatically through the device-session cookie: the watchlist, snapshots, and "since last visit" comparison all come back without any login step. Cross-device account sync — seeing the same watchlist from a phone and a laptop — is intentionally not implemented in this build. The device-session cookie could later be replaced by an authenticated user ID (from a real login) without changing the watchlist or snapshot data model at all: the `users`, `watchlist_items`, and `market_snapshots` shapes are already keyed by a user identifier, so swapping in an authenticated ID is a session-layer change, not a data-model change.
+Same-browser/device revisits persist automatically through the device-session cookie with no login step. Cross-device restoration is optional: creating an account migrates the current device watchlist into an authenticated server-side user, and signing in on another device restores it. The account layer deliberately remains small for the challenge build: there is no password reset, email verification, or multi-instance session store. PostgreSQL/Redis remain the production evolution for coordinated multi-instance state.
 
 ## Edge cases handled
 
@@ -104,6 +108,8 @@ Same-browser/device revisits persist automatically through the device-session co
 - **Unavailable/delisted symbols** — tickers with no usable price history (delisted, no activity, or an invalid symbol) stay in the watchlist as "unavailable" with an explanatory message rather than disappearing.
 - **Duplicate/concurrent mutations** — concurrent add/remove requests for the same user serialize through a per-user mutation lock, and concurrent requests for the same ticker share one in-flight market-data fetch instead of issuing duplicate provider calls.
 
+- **Authentication abuse limiting** — login and registration failures are throttled in-memory after five failures within ten minutes, keyed by both client address and normalized email. A production multi-instance deployment would move this limiter to a shared store.
+
 ## Product pitch
 
-I built Signal Watch to answer a practical question: what changed in my stocks since I last checked? Instead of ranking the largest percentage moves, it compares each move with the stock's own recent volatility and checks whether volume confirms it. A calm stock moving 1% can matter more than a volatile stock moving 4%. The feed explains each signal in plain language and keeps the full watchlist below it. I designed it for NSE symbols and rupee prices. I chose device-backed server persistence over full login for quicker setup; the trade-off is that watchlists cannot yet merge across devices.
+I built Signal Watch to answer a practical question: what changed in my stocks since I last checked? Instead of ranking the largest percentage moves, it compares each move with the stock's own recent volatility, uses volume as confirmation, adds peer context where enough watched peers exist, and remembers attention-state transitions across visits. The feed supports NSE and supported U.S. symbols where provider data is available, and formats prices from provider currency metadata. Anonymous device use remains the zero-friction default, while an optional account restores the same server-backed watchlist on another device.
