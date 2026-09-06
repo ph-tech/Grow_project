@@ -51,6 +51,7 @@
           <button class="quiet-button" id="refresh">Refresh data</button>
         </div>
         <p class="panel-note" id="last-visit"></p>
+        <div class="transition-summary" id="transition-summary" hidden></div>
         <div id="signals" class="signals"></div>
       </section>
 
@@ -121,13 +122,17 @@
       <p class="label">SYNC YOUR WATCHLIST</p>
       <h2 id="auth-heading">Create your account</h2>
       <p id="auth-copy">Your current device watchlist will be kept and linked to your account.</p>
+      <div id="account-connected" hidden>
+        <p>Signed in as <strong id="account-email"></strong></p>
+        <p>Cross-device watchlist sync is active.</p>
+        <button class="text-button danger" id="logout-button">Sign out</button>
+      </div>
       <form id="auth-form">
         <label>Email <input id="auth-email" type="email" autocomplete="email" required /></label>
         <label>Password <input id="auth-password" type="password" autocomplete="new-password" minlength="10" required /></label>
         <button class="quiet-button" type="submit" id="auth-submit">Create account</button>
       </form>
       <button class="text-button" id="auth-switch">Already have an account? Sign in</button>
-      <button class="text-button danger" id="logout-button" hidden>Sign out</button>
     </dialog>
     <dialog id="detail-dialog">
       <button class="dialog-close" aria-label="Close stock detail">×</button>

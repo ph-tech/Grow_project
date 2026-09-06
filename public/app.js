@@ -18,12 +18,13 @@ let session = { authenticated: false };
 
 const formatPrice = (value, currency) => {
   if (!Number.isFinite(value)) return "—";
+  if (!currency) return new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value);
   try {
     return new Intl.NumberFormat(currency === "INR" ? "en-IN" : undefined, {
-      style: "currency", currency: currency || "INR", maximumFractionDigits: 2,
+      style: "currency", currency, maximumFractionDigits: 2,
     }).format(value);
   } catch {
-    return value.toFixed(2);
+    return new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value);
   }
 };
 const formatPercent = (value) => Number.isFinite(value) ? `${value >= 0 ? "+" : ""}${value.toFixed(2)}%` : "—";
@@ -58,6 +59,39 @@ function peerLine(peer) {
   return `<small class="peer-line"><b>Peer divergence:</b> ${escaped(peer.explanation)}</small>`;
 }
 
+function transitionBadges(entry) {
+  const labels = [];
+  if (entry.transition?.becameUnusual) labels.push("NEW SIGNAL");
+  if (entry.transition?.newPeerDivergence) labels.push("PEER BREAKOUT");
+  return labels.length ? `<div class="transition-badges">${labels.map((label) => `<span>${label}</span>`).join("")}</div>` : "";
+}
+
+function renderTransitions(transitions, alertLevel) {
+  const target = document.querySelector("#transition-summary");
+  if (!target) return;
+  if (alertLevel === "off") {
+    target.hidden = false;
+    target.innerHTML = `<b>Signal digest paused</b><span>Attention transitions are still tracked for your next visit.</span>`;
+    return;
+  }
+  if (!transitions || transitions.firstVisit) {
+    target.hidden = true;
+    target.replaceChildren();
+    return;
+  }
+  const pieces = [];
+  if (transitions.becameUnusual?.length) pieces.push(`<span><b>${transitions.becameUnusual.length}</b> became unusual</span>`);
+  if (transitions.returnedToNormal?.length) pieces.push(`<span><b>${transitions.returnedToNormal.length}</b> returned to normal</span>`);
+  if (transitions.newPeerDivergence?.length) pieces.push(`<span><b>${transitions.newPeerDivergence.length}</b> new peer divergence</span>`);
+  if (transitions.largestMove) {
+    pieces.push(`<span>Largest move: <b>${escaped(displayTicker(transitions.largestMove.ticker))} ${formatPercent(transitions.largestMove.percent)}</b></span>`);
+  }
+  target.hidden = false;
+  target.innerHTML = pieces.length
+    ? `<strong>SINCE YOUR LAST VISIT</strong>${pieces.join("")}`
+    : `<strong>SINCE YOUR LAST VISIT</strong><span>No attention-state changes since your last visit.</span>`;
+}
+
 function signalCard(entry, index) {
   const signal = entry.signal;
   const direction = signal.changePercent >= 0 ? "up" : "down";
@@ -66,11 +100,12 @@ function signalCard(entry, index) {
     <div class="signal-main">
       <div class="ticker-row"><strong>${escaped(displayTicker(entry.ticker))}</strong><span>${escaped(entry.name)}</span></div>
       <p>${escaped(signal.explanation)}</p>
+      ${transitionBadges(entry)}
       ${peerLine(entry.peer)}
       ${entry.sinceVisitPercent !== null ? `<small class="since-visit ${entry.sinceVisitPercent >= 0 ? "up" : "down"}">Since last visit: <b>${formatPercent(entry.sinceVisitPercent)}</b></small>` : `<small>First check-in: baseline saved now.</small>`}
     </div>
     <div class="signal-price"><b>${formatPrice(entry.price, entry.currency)}</b><span class="${direction}">${formatPercent(signal.changePercent)}</span></div>
-    <div class="score"><b>${formatNumber(entry.priority || signal.score)}</b><span>signal score</span></div>
+    <div class="score"><b>${formatNumber(entry.attentionScore ?? entry.priority ?? signal.score)}</b><span>attention score</span></div>
   </article>`;
 }
 
@@ -104,18 +139,22 @@ function render(data) {
   document.querySelector("#last-visit").textContent = data.lastSeenAt
     ? `Compared with your last check at ${new Date(data.lastSeenAt).toLocaleString()}.`
     : "Your first check saves a baseline. Return later to see changes relative to this moment.";
+  const alertLevel = data.preferences?.alertLevel || "high";
   if (!entries.length) {
     signals.replaceChildren(emptyTemplate.content.cloneNode(true));
     watchlist.innerHTML = "";
   } else {
-    const flagged = entries.filter((entry) => entry.signal?.meaningful || entry.peer?.meaningful);
-    signals.innerHTML = flagged.length
-      ? flagged.map(signalCard).join("")
-      : `<div class="calm"><b>No unusual moves right now.</b><span>Your stocks moved within their normal range, and no tracked peer group is diverging.</span></div>`;
+    const flagged = entries.filter((entry) => entry.digestVisible);
+    signals.innerHTML = alertLevel === "off"
+      ? `<div class="calm"><b>Signal digest is paused.</b><span>Your full watchlist is still being tracked.</span></div>`
+      : flagged.length
+        ? flagged.map(signalCard).join("")
+        : `<div class="calm"><b>No ${alertLevel === "high" ? "high-confidence " : ""}unusual moves right now.</b><span>Your watchlist is still being monitored for relative surprise and peer divergence.</span></div>`;
     watchlist.innerHTML = entries.map(stockRow).join("");
   }
+  renderTransitions(data.transitions, alertLevel);
   renderMarket(data.market);
-  document.querySelector("#alert-level").value = data.preferences?.alertLevel || "high";
+  document.querySelector("#alert-level").value = alertLevel;
 }
 
 async function load(markSeen = false) {
@@ -228,16 +267,30 @@ async function loadSession() {
 }
 
 function openAccountDialog(login = false) {
-  document.querySelector("#auth-heading").textContent = login ? "Sign in to your account" : "Create your account";
-  document.querySelector("#auth-copy").textContent = login
-    ? "Sign in to restore your saved watchlist on this device."
-    : "Your current device watchlist will be kept and linked to your account.";
-  document.querySelector("#auth-submit").textContent = login ? "Sign in" : "Create account";
-  document.querySelector("#auth-password").autocomplete = login ? "current-password" : "new-password";
-  document.querySelector("#auth-switch").textContent = login ? "New here? Create an account" : "Already have an account? Sign in";
-  document.querySelector("#auth-form").dataset.mode = login ? "login" : "register";
-  document.querySelector("#logout-button").hidden = !session.authenticated;
-  accountDialog.showModal();
+  const form = document.querySelector("#auth-form");
+  const switchButton = document.querySelector("#auth-switch");
+  const connected = document.querySelector("#account-connected");
+  if (session.authenticated) {
+    document.querySelector("#auth-heading").textContent = "Account connected";
+    document.querySelector("#auth-copy").textContent = "Your watchlist is available after signing in on another device.";
+    document.querySelector("#account-email").textContent = session.email || "your account";
+    form.hidden = true;
+    switchButton.hidden = true;
+    connected.hidden = false;
+  } else {
+    document.querySelector("#auth-heading").textContent = login ? "Sign in to your account" : "Create your account";
+    document.querySelector("#auth-copy").textContent = login
+      ? "Sign in to restore your saved watchlist on this device."
+      : "Your current device watchlist will be kept and linked to your account.";
+    document.querySelector("#auth-submit").textContent = login ? "Sign in" : "Create account";
+    document.querySelector("#auth-password").autocomplete = login ? "current-password" : "new-password";
+    switchButton.textContent = login ? "New here? Create an account" : "Already have an account? Sign in";
+    form.dataset.mode = login ? "login" : "register";
+    form.hidden = false;
+    switchButton.hidden = false;
+    connected.hidden = true;
+  }
+  if (!accountDialog.open) accountDialog.showModal();
 }
 
 form.addEventListener("submit", async (event) => {
@@ -318,12 +371,14 @@ document.querySelector("#auth-form").addEventListener("submit", async (event) =>
   } catch (error) {
     notice(error.message, true);
   } finally {
+    document.querySelector("#auth-password").value = "";
     button.disabled = false;
   }
 });
 document.querySelector("#save-settings").addEventListener("click", async () => {
   try {
     await request("/api/preferences", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ alertLevel: document.querySelector("#alert-level").value }) });
+    await load(false);
     notice("Signal digest setting saved.");
   } catch (error) {
     notice(error.message, true);
