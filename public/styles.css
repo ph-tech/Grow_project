@@ -2,6 +2,7 @@
 
 :root { --bone:#f4efe6; --paper:#fbf8f1; --ink:#20251f; --muted:#71766d; --line:#dcd5c9; --amber:#e65c21; --amber-soft:#f8ded0; --up:#167567; --down:#b34036; --closed-bg:#e6e6e6; --mono:"DM Mono",monospace; }
 * { box-sizing:border-box; }
+[hidden] { display:none !important; }
 body { margin:0; background:var(--bone); color:var(--ink); font-family:"DM Sans",sans-serif; }
 main { width:min(1180px,calc(100% - 40px)); margin:0 auto; padding:28px 0 60px; }
 .topbar,.panel-heading,.ticker-row,.status,.add-stock div,.header-actions,.nav { display:flex; align-items:center; justify-content:space-between; }
