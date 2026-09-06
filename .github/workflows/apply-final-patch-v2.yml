@@ -1,0 +1,32 @@
+name: Apply Signal Watch final patch v2
+
+on:
+  push:
+    branches:
+      - final-code-2026-polish
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.head_commit.message != 'Finalize attention transitions and submission correctness'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply uploaded patch
+        env:
+          PATCH_B64: ${{ secrets.SIGNAL_WATCH_PATCH_B64 }}
+        run: |
+          printf '%s' "$PATCH_B64" | tr -d '[:space:]' | base64 -d | gzip -d > apply_signal_watch_final.py
+          python3 apply_signal_watch_final.py
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git diff --check
+          git add README.md server.js lib/attention.js public/app.js public/index.html public/styles.css test/attention.test.js test/server.test.js
+          git commit -m "Finalize attention transitions and submission correctness"
+          git push origin HEAD:final-code-2026-polish
