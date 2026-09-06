@@ -79,17 +79,17 @@ function renderTransitions(transitions, alertLevel) {
     target.replaceChildren();
     return;
   }
-  const pieces = [];
-  if (transitions.becameUnusual?.length) pieces.push(`<span><b>${transitions.becameUnusual.length}</b> became unusual</span>`);
-  if (transitions.returnedToNormal?.length) pieces.push(`<span><b>${transitions.returnedToNormal.length}</b> returned to normal</span>`);
-  if (transitions.newPeerDivergence?.length) pieces.push(`<span><b>${transitions.newPeerDivergence.length}</b> new peer divergence</span>`);
-  if (transitions.largestMove) {
-    pieces.push(`<span>Largest move: <b>${escaped(displayTicker(transitions.largestMove.ticker))} ${formatPercent(transitions.largestMove.percent)}</b></span>`);
-  }
+  const transitionPieces = [];
+  if (transitions.becameUnusual?.length) transitionPieces.push(`<span><b>${transitions.becameUnusual.length}</b> became unusual</span>`);
+  if (transitions.returnedToNormal?.length) transitionPieces.push(`<span><b>${transitions.returnedToNormal.length}</b> returned to normal</span>`);
+  if (transitions.newPeerDivergence?.length) transitionPieces.push(`<span><b>${transitions.newPeerDivergence.length}</b> new peer divergence</span>`);
+  const largestMove = transitions.largestMove
+    ? `<span>Largest move: <b>${escaped(displayTicker(transitions.largestMove.ticker))} ${formatPercent(transitions.largestMove.percent)}</b></span>`
+    : "";
   target.hidden = false;
-  target.innerHTML = pieces.length
-    ? `<strong>SINCE YOUR LAST VISIT</strong>${pieces.join("")}`
-    : `<strong>SINCE YOUR LAST VISIT</strong><span>No attention-state changes since your last visit.</span>`;
+  target.innerHTML = transitionPieces.length
+    ? `<strong>SINCE YOUR LAST VISIT</strong>${transitionPieces.join("")}${largestMove}`
+    : `<strong>SINCE YOUR LAST VISIT</strong><span>No attention-state changes since your last visit.</span>${largestMove}`;
 }
 
 function signalCard(entry, index) {
@@ -218,7 +218,7 @@ async function loadHistory() {
           <div><strong>${escaped(displayTicker(item.ticker))}</strong><span>${new Date(item.at).toLocaleDateString()}</span></div>
           <p>${escaped(item.explanation)}</p><b class="${item.changePercent >= 0 ? "up" : "down"}">${formatPercent(item.changePercent)}</b>
         </article>`).join("")
-      : `<div class="calm"><b>No historical signals yet.</b><span>Add stocks and revisit after market movements to build your signal record.</span></div>`;
+      : `<div class="calm"><b>No historical signals yet.</b><span>Historical meaningful moves are recomputed from available provider history.</span></div>`;
   } catch (error) {
     target.innerHTML = `<div class="calm"><b>Could not load signal history.</b><span>${escaped(error.message)}</span></div>`;
   }
@@ -238,7 +238,7 @@ async function showDetail(ticker) {
       <div class="detail-price">${formatPrice(entry.price, entry.currency)} <span class="${entry.signal.changePercent >= 0 ? "up" : "down"}">${formatPercent(entry.signal.changePercent)}</span></div>
       <p>${escaped(entry.signal.explanation)}</p>
       <div class="range-chart">${points.map((price) => `<i style="height:${Math.max(8, ((price - minimum) / Math.max(maximum - minimum, 0.01)) * 100)}%"></i>`).join("")}</div>
-      <div class="detail-stats"><span><b>${formatNumber(entry.signal.volatility, 2)}%</b> usual swing</span><span><b>${entry.signal.volumeRatio ? `${formatNumber(entry.signal.volumeRatio)}x` : "—"}</b> volume</span><span><b>${entry.historicSignals.length}</b> past signals</span></div>`;
+      <div class="detail-stats"><span><b>${formatNumber(entry.signal.volatility, 2)}%</b> usual swing</span><span><b>${entry.signal.volumeRatio ? `${formatNumber(entry.signal.volumeRatio)}x` : "—"}</b> volume</span><span><b>${entry.historicSignals.length}</b> past meaningful moves</span></div>`;
   } catch (error) {
     target.innerHTML = `<p class="label">STOCK DETAIL</p><h2>Unavailable</h2><p>${escaped(error.message)}</p>`;
   }
@@ -404,4 +404,6 @@ signals.addEventListener("click", (event) => {
   if (card) showDetail(card.dataset.detail);
 });
 
-Promise.all([loadSession(), load(true)]).catch((error) => notice(error.message, true));
+loadSession()
+  .then(() => load(true))
+  .catch((error) => notice(error.message, true));
